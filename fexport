@@ -1,0 +1,187 @@
+#!/usr/bin/env perl
+# vim: set ft=perl nowrap fdm=marker
+
+# load module ================================================================= {{{1
+use v5.34;
+use strict;
+use Encode;
+use utf8;
+use File::Basename;
+use File::Spec;
+use Getopt::Long;
+use File::Temp qx/tempfile tempdir/;
+use IPC::Open3;
+use Cwd;
+use feature qw( switch );
+no warnings qw( experimental::smartmatch );
+require(File::Spec->catfile(dirname($0), "rmd.pl"));
+
+# parse parameters ============================================================ {{{1
+my ($from, $to, $outfile);
+my ($logfh, $logfile) = tempfile();
+my $help = 0;
+my $verbose = 0;
+Getopt::Long::Configure ("bundling");
+GetOptions('to|t=s' => \$to,
+           'form|f=s' => \$from,
+           'outfile|o=s' => \$outfile,
+           'verbose|v' => \$verbose,
+           'help|h' => \$help);
+if ($help) { help(); exit 0 }
+$from //= $ARGV[0] =~ m/\.(\w+)$/ ? $1 : "md";
+$to //= $outfile =~ m/\.(\w+)$/ ? $1 : "html";
+$outfile //= "$ARGV[0].$to" if defined($ARGV[0]);
+
+my @pandoc = qw/pandoc +RTS -M512M -RTS/;
+push @pandoc, 
+    qq/--from markdown+emoji+east_asian_line_breaks+autolink_bare_uris/,
+    qq/--lua-filter rsbc.lua/;
+
+# parse input_file ============================================================ {{{1
+my @md_contents = ();
+given (lc($from)) {
+    when ("rmd") { 
+        my $infile;
+        my ($tpfh, $tpname) = tempfile();
+        unless (defined($ARGV[0])) {
+            print $tpfh $_ while (<>);
+            $infile = $tpname;
+        }
+        else { $infile = $ARGV[0]; }
+        $to = rmd2md($infile, $to, \@md_contents, \@pandoc, $logfile); 
+        $outfile //= "$infile.$to";
+    }
+    when ("md") { 
+        push @md_contents, $_ while (<<>>);
+    }
+    default { die "$from wasn't supperted yet!" }
+}
+push @pandoc, "-d2$to";
+
+# adjust markdown contents ==================================================== {{{1
+
+# transform markdown contest to target format ================================= {{{1
+given (lc($to)) {
+    when ("html") {
+        push @pandoc, qq/-t $to/, qq/-o -/;
+        my @html_contents = ();
+        md2array(\@md_contents, \@html_contents, \@pandoc);
+        str_adj_etal(\@html_contents);
+        str_adj_html(\@html_contents);
+        write2file(\@html_contents, $outfile);
+    }
+    when ("docx") {
+        push @pandoc, qq/-t docx/, qq/-o $outfile/;
+        md2file(\@md_contents, $outfile, \@pandoc);
+        str_adj_word($outfile);
+    }
+    when ("pdf") {
+        push @pandoc, qq/-t latex/, qq/-o -/;
+        my @tex_contents = ();
+        md2array(\@md_contents, \@tex_contents, \@pandoc);
+        str_adj_tex(\@tex_contents);
+        my $dir = tempdir();
+        my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
+        write2file(\@tex_contents, $intermidaite);
+        system(qq{
+            latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" &>>$logfile
+            mv $dir/intermidaite.pdf "$outfile"
+        });
+    }
+}
+
+if ($verbose) {
+    print $_ while (<$logfh>);
+}
+say "$outfile";
+
+# function needed to used ===================================================== {{{1 
+# transform md content in array to target format in array --------------------- {{{2
+sub md2array {
+    my ($in_contents, $out_contents, $pandoc) = @_;
+    my $pandoc_pid = open3(\*PIPIN, \*PIPOUT, \*PIPERR, join " ", @{$pandoc}) 
+        or die "open3() failed: $!";
+    print PIPIN join "", @{$in_contents};
+    close PIPIN;
+    @{$out_contents} = <PIPOUT>;
+}
+
+# transform md contests in array to target file ------------------------------- {{{2
+sub md2file {
+    my ($in_contents, $outfile, $pandoc) = @_;
+    open my $pandoc_fh, "|-", join " ", @{$pandoc} or die "cannot run pandoc: $!";
+    print $pandoc_fh join "", @{$in_contents};
+    close $pandoc_fh
+}
+
+# 将数组中的内容写入指定文件 -------------------------------------------------- {{{2
+sub write2file {
+    my ($content, $outfile) = @_;
+    open my $fh, ">", $outfile or die "cannot open $outfile: $!";
+    print $fh $_ for (@{$content});
+    close $fh;
+}
+
+# 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------------- {{{2
+sub str_adj_etal {
+    for (@{shift()}) {
+        s/([a-zA-Z])(,\s|\s)(等)/$1$2et al./g;
+        s/\s(等(\s\(|,\s|<\/a>|<\/w:t>))/$1/g;
+    }
+}
+
+# 替代文件内容 ---------------------------------------------------------------- {{{2
+sub str_adj_file {
+    my ($file, $f) = @_;
+    open my $infh, "<", $file or "Cannot open $file: $!";
+    my @contents = <$infh>;
+    close $infh;
+    $f->(\@contents);
+    open my $outfh, ">", $file or "Cannot open $file: $!";
+    print $outfh join "", @contents;
+}
+
+# 对于 html 输出格式做特殊的文本替代处理 -------------------------------------- {{{2
+sub str_adj_html {
+    for (@{shift()}) {
+        s/([^A-Za-z,."';])\s(<span class="citation" data\-cites="[^\w])/$1$2/g;
+        s/([^A-Za-z,."'';。 ； ， ： “ ”（ ） 、 ？ 《 》])(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/\1 \2/g;
+    }
+}
+
+# 对 tex 输出格式做特殊的调整 ------------------------------------------------- {{{2
+sub str_adj_tex {
+    for (@{shift()}) {
+        s/(``)([\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*)('\'\'')/“\2”/g; 
+        s/(`)([\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*)('\'')/‘\2’/g;
+    }
+}
+
+# 查找替代 word 文件的部分字符 ------------------------------------------------ {{{2
+sub str_adj_word {
+    my $file = shift;
+    my $cwd = getcwd();
+    my $dir = tempdir( CLEANUP => 1 );
+    system(qq/unzip -q "$file" -d "$dir"/);
+    chdir "$dir";
+
+    my $document_name = File::Spec->catfile("word", "document.xml");
+    str_adj_file($document_name, \&str_adj_word_documents);
+    my $footnotes_name = File::Spec->catfile("word", "footnotes.xml");
+    str_adj_file($footnotes_name, \&str_adj_word_fottnotes);
+
+    system(qq/zip -r -q "$file" */);
+    chdir $cwd;
+}
+
+sub str_adj_word_documents {
+    my $contents = shift;
+    str_adj_etal($contents);
+    for (@{$contents}) {
+        s/<w:r><w:t xml:space="preserve">\s<\/w:t><\/w:r>(<w:r><w:t xml:space="preserve">[^\(]+\(\d{4},)/$1/g;
+    }
+}
+
+sub str_adj_word_fottnotes {
+    str_adj_etal(shift);
+}
