@@ -21,11 +21,13 @@ my ($from, $to, $outfile);
 my ($logfh, $logfile) = tempfile();
 my $help = 0;
 my $verbose = 0;
+my $pandoc_opts_user = "";
 Getopt::Long::Configure ("bundling");
 GetOptions('to|t=s' => \$to,
            'form|f=s' => \$from,
            'outfile|o=s' => \$outfile,
            'verbose|v' => \$verbose,
+           'pandoc|p' => \$pandoc_opts_user,
            'help|h' => \$help);
 if ($help) { help(); exit 0 }
 $from //= $ARGV[0] =~ m/\.(\w+)$/ ? $1 : "md";
@@ -34,6 +36,7 @@ $outfile //= "$ARGV[0].$to" if defined($ARGV[0]);
 
 my @pandoc = qw/pandoc +RTS -M512M -RTS/;
 push @pandoc, 
+    $pandoc_opts_user,
     qq/--from markdown+emoji+east_asian_line_breaks+autolink_bare_uris/,
     qq/--lua-filter rsbc.lua/;
 
@@ -56,14 +59,13 @@ given (lc($from)) {
     }
     default { die "$from wasn't supperted yet!" }
 }
-push @pandoc, "-d2$to";
 
 # adjust markdown contents ==================================================== {{{1
 
 # transform markdown contest to target format ================================= {{{1
 given (lc($to)) {
     when ("html") {
-        push @pandoc, qq/-t $to/, qq/-o -/;
+        push @pandoc, pandoc_opts_default($to), qq/-t $to/, qq/-o -/;
         my @html_contents = ();
         md2array(\@md_contents, \@html_contents, \@pandoc);
         str_adj_etal(\@html_contents);
@@ -71,12 +73,12 @@ given (lc($to)) {
         write2file(\@html_contents, $outfile);
     }
     when ("docx") {
-        push @pandoc, qq/-t docx/, qq/-o $outfile/;
+        push @pandoc, pandoc_opts_default($to), qq/-t docx/, qq/-o $outfile/;
         md2file(\@md_contents, $outfile, \@pandoc);
         str_adj_word($outfile);
     }
     when ("pdf") {
-        push @pandoc, qq/-t latex/, qq/-o -/;
+        push @pandoc, pandoc_opts_default("tex"), qq/-t latex/, qq/-o -/;
         my @tex_contents = ();
         md2array(\@md_contents, \@tex_contents, \@pandoc);
         str_adj_tex(\@tex_contents);
@@ -114,12 +116,22 @@ sub md2file {
     close $pandoc_fh
 }
 
-# 将数组中的内容写入指定文件 -------------------------------------------------- {{{2
-sub write2file {
-    my ($content, $outfile) = @_;
-    open my $fh, ">", $outfile or die "cannot open $outfile: $!";
-    print $fh $_ for (@{$content});
-    close $fh;
+# pandoc default options ------------------------------------------------------ {{{2 
+sub pandoc_opts_default {
+    my $to = shift;
+    my $datadir;
+    my $defaults = "";
+    open my $pandoc_fh, "-|", "pandoc --version";
+    while (<$pandoc_fh>) {
+        if (m/^\s*User data directory:\s*([^\s]+)$/) {
+            $datadir = $1;
+            last;
+        }
+    }
+    close $pandoc_fh;
+    my $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
+    $defaults = "-d2$to.yaml" if -f $defaultfile;
+    return($defaults)
 }
 
 # 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------------- {{{2
@@ -185,3 +197,12 @@ sub str_adj_word_documents {
 sub str_adj_word_fottnotes {
     str_adj_etal(shift);
 }
+
+# 将数组中的内容写入指定文件 -------------------------------------------------- {{{2
+sub write2file {
+    my ($content, $outfile) = @_;
+    open my $fh, ">", $outfile or die "cannot open $outfile: $!";
+    print $fh $_ for (@{$content});
+    close $fh;
+}
+
