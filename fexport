@@ -14,7 +14,9 @@ use IPC::Open3;
 use Cwd;
 use feature qw( switch );
 no warnings qw( experimental::smartmatch );
-require(File::Spec->catfile(dirname($0), "rmd.pl"));
+
+my $programdir = -l $0 ? dirname(readlink($0)) : dirname($0);
+require(File::Spec->catfile($programdir, "rmd.pl"));
 
 # parse parameters ============================================================ {{{1
 my ($from, $to, $outfile);
@@ -32,7 +34,9 @@ GetOptions('to|t=s' => \$to,
 if ($help) { help(); exit 0 }
 $from //= $ARGV[0] =~ m/\.(\w+)$/ ? $1 : "md";
 $to //= $outfile =~ m/\.(\w+)$/ ? $1 : "html";
-$outfile //= "$ARGV[0].$to" if defined($ARGV[0]);
+if (defined($ARGV[0])) {
+    ($outfile = $ARGV[0]) =~ s/\.\w+$/.$to/;
+}
 
 my @pandoc = qw/pandoc +RTS -M512M -RTS/;
 push @pandoc, 
@@ -89,6 +93,10 @@ given (lc($to)) {
             latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" &>>$logfile
             mv $dir/intermidaite.pdf "$outfile"
         });
+    }
+    default {
+        push @pandoc, pandoc_opts_default($to), qq/-t $to/, qq/-o $outfile/;
+        md2file(\@md_contents, $outfile, \@pandoc);
     }
 }
 
