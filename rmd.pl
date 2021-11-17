@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use utf8;
+use Encode;
 use File::Basename;
 use File::Temp qw/tempfile tempdir/;
 use File::Spec::Functions;
@@ -23,8 +24,8 @@ my %rmd_render_option = (
     docx => {
         out => "officedown::rdocx_document",
         opt => [
-            qq/tables = list(caption = list(pre = '表', sep = '  '))/, 
-            qq/plots  = list(caption = list(pre = '图', sep = '  '))/, 
+            qq/tables = list(caption = list(pre = 'Table:', sep = '  '))/, 
+            qq/plots  = list(caption = list(pre = 'Figure:', sep = '  '))/, 
         ],
         ext => "docx",
     },
@@ -72,14 +73,15 @@ sub rmd2md {
     my %out = %{$rmd_render_option{$to}};
     $out{opt} //= [];
     $out{opt} = join ", ", @{$out{opt}};
-
-    my $cmd = qq<
+    my $opt = $out{opt};
+    my $cmd = qq{
         rmarkdown::render('$infile',
                           output_format = $out{out}($out{opt}),
                           intermediates_dir = '$tdir',
                           run_pandoc = FALSE)
-    >;
+    };
     system(qq{Rscript --verbose -e "$cmd" &>>$logfile});
+    system("cat $outfile");
     open my $md_fh, "<", $outfile or die "Cannot open file $outfile";
     @{$md_contents} = <$md_fh>;
     close $md_fh;
