@@ -2,7 +2,7 @@
 # vim: set ft=perl nowrap fdm=marker
 
 # load module ================================================================= {{{1
-use v5.34;
+use v5.30;
 use strict;
 use Encode;
 use utf8;
@@ -90,7 +90,7 @@ given (lc($to)) {
         my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
         write2file(\@tex_contents, $intermidaite);
         system(qq{
-            latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" &>>$logfile
+            latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" >>$logfile 2>>$logfile
             mv $dir/intermidaite.pdf "$outfile"
         });
     }

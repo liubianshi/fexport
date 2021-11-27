@@ -78,9 +78,10 @@ sub rmd2md {
         rmarkdown::render('$infile',
                           output_format = $out{out}($out{opt}),
                           intermediates_dir = '$tdir',
+                          quiet = TRUE,
                           run_pandoc = FALSE)
     };
-    system(qq{Rscript --verbose -e "$cmd" &>>$logfile});
+    system(qq{Rscript --verbose -e "$cmd" >>$logfile 2>>$logfile});
     system("cat $outfile");
     open my $md_fh, "<", $outfile or die "Cannot open file $outfile";
     @{$md_contents} = <$md_fh>;
