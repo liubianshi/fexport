@@ -127,8 +127,7 @@ sub md2file {
 # pandoc default options ------------------------------------------------------ {{{2 
 sub pandoc_opts_default {
     my $to = shift;
-    my $datadir;
-    my $defaults = "";
+    my ($datadir, $defaults, $defaultfile);
     open my $pandoc_fh, "-|", "pandoc --version";
     while (<$pandoc_fh>) {
         if (m/^\s*User data directory:\s*([^\s]+)$/) {
@@ -137,9 +136,14 @@ sub pandoc_opts_default {
         }
     }
     close $pandoc_fh;
+
     my $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
-    $defaults = "-d2$to.yaml" if -f $defaultfile;
-    return($defaults)
+    $defaults = "-d2$to" if -f $defaultfile;
+    if (qx/uname/ eq "Darwin") {
+        $defaultfile  = File::Spec->catfile($datadir, "defaults", "2${to}_mac.yaml");
+        $defaults = "-d2${to}_mac" if -f $defaultfile;
+    }
+    return($defaults // "")
 }
 
 # 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------------- {{{2
