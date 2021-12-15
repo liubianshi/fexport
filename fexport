@@ -84,6 +84,7 @@ given (lc($to)) {
     when ("pdf") {
         push @pandoc, pandoc_opts_default("tex"), qq/-t latex/, qq/-o -/;
         my @tex_contents = ();
+        str_adj_md_contents_for_tex(\@md_contents);
         md2array(\@md_contents, \@tex_contents, \@pandoc);
         str_adj_tex(\@tex_contents);
         my $dir = tempdir();
@@ -139,7 +140,7 @@ sub pandoc_opts_default {
 
     my $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
     $defaults = "-d2$to" if -f $defaultfile;
-    if (qx/uname/ eq "Darwin") {
+    if (qx/uname/ =~ /^Darwin/) {
         $defaultfile  = File::Spec->catfile($datadir, "defaults", "2${to}_mac.yaml");
         $defaults = "-d2${to}_mac" if -f $defaultfile;
     }
@@ -174,6 +175,12 @@ sub str_adj_html {
 }
 
 # 对 tex 输出格式做特殊的调整 ------------------------------------------------- {{{2
+sub str_adj_md_contents_for_tex {
+    for (@{shift()}) {
+        s/\$\$(\\begin\{equa[^\}]+\})/$1/g;
+        s/(\\end\{equa[^\}]+\})[^\$]*\$\$/$1/g;
+    }
+}
 sub str_adj_tex {
     for (@{shift()}) {
         s/(``)([\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*)('\'\'')/“\2”/g; 
