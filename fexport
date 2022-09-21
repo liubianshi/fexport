@@ -18,93 +18,107 @@ no warnings qw( experimental::smartmatch );
 my $programdir = -l $0 ? dirname(readlink($0)) : dirname($0);
 require(File::Spec->catfile($programdir, "rmd.pl"));
 
-# parse parameters ============================================================ {{{1
-my ($from, $to, $outfile);
-my ($logfh, $logfile) = tempfile();
-my $help = 0;
-my $verbose = 0;
-my $pandoc_opts_user = "";
+# parse parameters ====================================================== {{{1
+my ($LOG_FH, $LOG_FILE) = tempfile();
+$SIG{INT} = \&clean_temp_file;
+$SIG{TERM} = \&clean_temp_file;
+
 Getopt::Long::Configure ("bundling");
-GetOptions('to|t=s' => \$to,
-           'form|f=s' => \$from,
-           'outfile|o=s' => \$outfile,
-           'verbose|v' => \$verbose,
-           'pandoc|p' => \$pandoc_opts_user,
-           'help|h' => \$help);
-if ($help) { help(); exit 0 }
-$from //= $ARGV[0] =~ m/\.(\w+)$/ ? $1 : "md";
-$to //= $outfile =~ m/\.(\w+)$/ ? $1 : "html";
-if (defined($ARGV[0])) {
-    ($outfile = $ARGV[0]) =~ s/\.\w+$/.$to/;
+GetOptions('to|t=s'      => \my $OUTFORMAT,
+           'from|f=s'    => \my $FROM,
+           'outfile|o=s' => \my $OUTFILE,
+           'verbose|v'   => \my $VERBOSE,
+           'pandoc|p'    => \my $PANDOC_OPTS_USER,
+           'help|h'      => \my $HELP);
+
+if ($HELP) { help(); exit 0 }
+
+my $INFILE = do {
+    if (defined($ARGV[0])) {
+        $ARGV[0];
+    }
+    else {
+        my ($tpfh, $tpfile) = tempfile(suffix => '.' . ($FROM // "md"));
+        print $tpfh $_ while (<>);
+        close $tpfh;
+        $tpfile
+    }
+};
+$FROM //= $INFILE =~ m/\.(\w+)$/ ? $1 : "md";
+$OUTFORMAT   //= $OUTFILE =~ m/\.(\w+)$/ ? $1 : "html";
+($FROM, $OUTFORMAT) = map {lc} $FROM, $OUTFORMAT;
+unless (defined($OUTFILE)) {
+    ($OUTFILE = $INFILE) =~ s/\.\w+$/.$OUTFORMAT/;
 }
 
-my @pandoc = qw/pandoc +RTS -M512M -RTS/;
-push @pandoc, 
-    $pandoc_opts_user,
-    qq/--from markdown+emoji+east_asian_line_breaks+autolink_bare_uris/,
-    qq/--lua-filter rsbc.lua/;
+my @PANDOC = qw/pandoc +RTS -M512M -RTS/, $PANDOC_OPTS_USER // "";
+if ($FROM ~~ ["md", "markdown", "rmd", "rmarkdown"]) {
+    push @PANDOC, "--from=markdown+emoji+east_asian_line_breaks+autolink_bare_uris",
+} else {
+    push @PANDOC, "--from=$FROM",
+}
+push @PANDOC, "--lua-filter=rsbc.lua";
+
+my @MD_CONTENTS = ();
 
 # parse input_file ============================================================ {{{1
-my @md_contents = ();
-given (lc($from)) {
-    when ("rmd") { 
-        my $infile;
-        my ($tpfh, $tpname) = tempfile();
-        unless (defined($ARGV[0])) {
-            print $tpfh $_ while (<>);
-            $infile = $tpname;
-        }
-        else { $infile = $ARGV[0]; }
-        $to = rmd2md($infile, $to, \@md_contents, \@pandoc, $logfile); 
-        $outfile //= "$infile.$to";
+if ($FROM eq "rmd") {
+    my %rmdopt = rmd2md($INFILE, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE); 
+    $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
+    unless ($OUTFORMAT eq "beamer") {
+        $OUTFORMAT = $rmdopt{ext};
     }
-    when ("md") { 
-        push @md_contents, $_ while (<<>>);
-    }
-    default { die "$from wasn't supperted yet!" }
+}
+elsif ($FROM eq "md") {
+    push @MD_CONTENTS, $_ while (<<>>);
+}
+else {
+    die "$FROM wasn't supperted yet!" 
 }
 
 # adjust markdown contents ==================================================== {{{1
-
 # transform markdown contest to target format ================================= {{{1
-given (lc($to)) {
+given ($OUTFORMAT) {
     when ("html") {
-        push @pandoc, pandoc_opts_default($to), qq/-t $to/, qq/-o -/;
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=-";
         my @html_contents = ();
-        md2array(\@md_contents, \@html_contents, \@pandoc);
+        md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
         str_adj_etal(\@html_contents);
         str_adj_html(\@html_contents);
-        write2file(\@html_contents, $outfile);
+        write2file(\@html_contents, $OUTFILE);
     }
     when ("docx") {
-        push @pandoc, pandoc_opts_default($to), qq/-t docx/, qq/-o $outfile/;
-        md2file(\@md_contents, $outfile, \@pandoc);
-        str_adj_word($outfile);
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=$OUTFILE";
+        md2file(\@MD_CONTENTS, $OUTFILE, \@PANDOC);
+        str_adj_word($OUTFILE);
     }
     when ("pdf") {
-        push @pandoc, pandoc_opts_default("tex"), qq/-t latex/, qq/-o -/;
         my @tex_contents = ();
-        str_adj_md_contents_for_tex(\@md_contents);
-        md2array(\@md_contents, \@tex_contents, \@pandoc);
-        str_adj_tex(\@tex_contents);
         my $dir = tempdir();
         my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
+        push @PANDOC, pandoc_opts_default("tex"), "--to=latex", "--output=-";
+
+        str_adj_md_contents_for_tex(\@MD_CONTENTS);
+        md2array(\@MD_CONTENTS, \@tex_contents, \@PANDOC);
+        str_adj_tex(\@tex_contents);
         write2file(\@tex_contents, $intermidaite);
         system(qq{
-            latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" >>$logfile 2>>$logfile
-            mv $dir/intermidaite.pdf "$outfile"
+            latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" >>$LOG_FILE 2>>$LOG_FILE
+            mv $dir/intermidaite.pdf "$OUTFILE"
         });
     }
     default {
-        push @pandoc, pandoc_opts_default($to), qq/-t $to/, qq/-o $outfile/;
-        md2file(\@md_contents, $outfile, \@pandoc);
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=$OUTFILE";
+        md2file(\@MD_CONTENTS, $OUTFILE, \@PANDOC);
     }
 }
 
-if ($verbose) {
-    print $_ while (<$logfh>);
+if ($VERBOSE) {
+    print $_ while (<$LOG_FH>);
 }
-say "$outfile";
+say "$OUTFILE";
+clean_temp_file(); 
+exit 0;
 
 # function needed to used ===================================================== {{{1 
 # transform md content in array to target format in array --------------------- {{{2
@@ -115,80 +129,88 @@ sub md2array {
     print PIPIN join "", @{$in_contents};
     close PIPIN;
     @{$out_contents} = <PIPOUT>;
+    close PIPOUT;
 }
 
-# transform md contests in array to target file ------------------------------- {{{2
+# transform md contests in array to target file ------------------------- {{{2
 sub md2file {
     my ($in_contents, $outfile, $pandoc) = @_;
-    open my $pandoc_fh, "|-", join " ", @{$pandoc} or die "cannot run pandoc: $!";
+    open my $pandoc_fh, "|-", join(" ", @{$pandoc}) or die "cannot run pandoc: $!";
     print $pandoc_fh join "", @{$in_contents};
     close $pandoc_fh
 }
 
-# pandoc default options ------------------------------------------------------ {{{2 
+# pandoc default options ------------------------------------------------ {{{2
 sub pandoc_opts_default {
     my $to = shift;
     my ($datadir, $defaults, $defaultfile);
-    open my $pandoc_fh, "-|", "pandoc --version";
-    while (<$pandoc_fh>) {
-        if (m/^\s*User data directory:\s*([^\s]+)$/) {
-            $datadir = $1;
-            last;
-        }
-    }
-    close $pandoc_fh;
-
+    $datadir = qx/pandoc --version | grep -E '^User data'/;
+    $datadir =~ s/^.*\s*User data directory:\s*([^\s]+)\n/$1/;
     my $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
     $defaults = "-d2$to" if -f $defaultfile;
     if (qx/uname/ =~ /^Darwin/) {
         $defaultfile  = File::Spec->catfile($datadir, "defaults", "2${to}_mac.yaml");
         $defaults = "-d2${to}_mac" if -f $defaultfile;
     }
-    return($defaults // "")
+    return($defaults // "");
 }
 
-# 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------------- {{{2
+# 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------- {{{2
 sub str_adj_etal {
     for (@{shift()}) {
-        s/([a-zA-Z])(,\s|\s)(等)/$1$2et al./g;
-        s/\s(等(\s\(|,\s|<\/a>|<\/w:t>))/$1/g;
+        s{ ([a-zA-Z]) (,\s|\s) 等                    }{ $1$2et al. }gx;
+        s{ \s (等 (?:\s\( | ,\s  | <\/a> | <\/w:t>)) }{ $1         }gx;
     }
 }
 
-# 替代文件内容 ---------------------------------------------------------------- {{{2
+# 替代文件内容 ---------------------------------------------------------- {{{2
 sub str_adj_file {
-    my ($file, $f) = @_;
+    my ($file, $sub) = @_;
+
     open my $infh, "<", $file or "Cannot open $file: $!";
     my @contents = <$infh>;
     close $infh;
-    $f->(\@contents);
+
+    $sub->(\@contents);
     open my $outfh, ">", $file or "Cannot open $file: $!";
     print $outfh join "", @contents;
 }
 
-# 对于 html 输出格式做特殊的文本替代处理 -------------------------------------- {{{2
+# 对于 html 输出格式做特殊的文本替代处理 -------------------------------- {{{2
 sub str_adj_html {
+    my $cjk = qr/[^A-Za-z,."'';。；，：“”（）、？《》]/;
     for (@{shift()}) {
         s/([^A-Za-z,."';])\s(<span class="citation" data\-cites="[^\w])/$1$2/g;
-        s/([^A-Za-z,."'';。 ； ， ： “ ”（ ） 、 ？ 《 》])(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/\1 \2/g;
+        s/($cjk)(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/$1 $2/g;
     }
 }
 
-# 对 tex 输出格式做特殊的调整 ------------------------------------------------- {{{2
+# 对 tex 输出格式做特殊的调整 ------------------------------------------- {{{2
 sub str_adj_md_contents_for_tex {
-    for (@{shift()}) {
-        s/\$\$(\\begin\{equa[^\}]+\})/$1/g;
-        s/(\\end\{equa[^\}]+\})[^\$]*\$\$/$1/g;
-    }
-}
-sub str_adj_tex {
-    for (@{shift()}) {
-        s/(``)([\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*)('\'\'')/“\2”/g; 
-        s/(`)([\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*)('\'')/‘\2’/g;
+    my $content_ref = shift;
+    my $math_sign = qr/\$\$/;
+    my $eq_begin = qr/\\begin\{equa[^\}]+\}/;
+    my $eq_end = qr/\\end\{equa[^\}]+\}/;
+
+    for (@{$content_ref}) {
+        s/$math_sign ($eq_begin)/$1/gx;
+        s/($eq_end) [^\$]* $math_sign/$1/gx;
     }
 }
 
-# 查找替代 word 文件的部分字符 ------------------------------------------------ {{{2
+sub str_adj_tex {
+    my $content_ref = shift;
+    my $words = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
+    my $quote_left = qr/\`/;
+    my $quote_right = qr/\'/;
+
+    for (@{$content_ref}) {
+        s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx; 
+        s/$quote_left    ($words) $quote_right   /‘$1’/gx;
+    }
+}
+
+# 查找替代 word 文件的部分字符 ------------------------------------------ {{{2
 sub str_adj_word {
     my $file = shift;
     my $cwd = getcwd();
@@ -208,8 +230,13 @@ sub str_adj_word {
 sub str_adj_word_documents {
     my $contents = shift;
     str_adj_etal($contents);
+
+    my $tag_start    = qr/ <w:r> <w:t \s xml:space="preserve"> /x;
+    my $tag_end      = qr/ <\/w:t> <\/w:r>                     /x;
+    my $digits_sign  = qr/ [^\(]+ \(\d{4},                     /x;
+
     for (@{$contents}) {
-        s/<w:r><w:t xml:space="preserve">\s<\/w:t><\/w:r>(<w:r><w:t xml:space="preserve">[^\(]+\(\d{4},)/$1/g;
+        s/$tag_start \s $tag_end ($tag_start $digits_sign)/$1/gx;
     }
 }
 
@@ -217,7 +244,7 @@ sub str_adj_word_fottnotes {
     str_adj_etal(shift);
 }
 
-# 将数组中的内容写入指定文件 -------------------------------------------------- {{{2
+# 将数组中的内容写入指定文件 -------------------------------------------- {{{2
 sub write2file {
     my ($content, $outfile) = @_;
     open my $fh, ">", $outfile or die "cannot open $outfile: $!";
@@ -225,3 +252,8 @@ sub write2file {
     close $fh;
 }
 
+# 清理临时文件 ---------------------------------------------------------- {{{2
+sub clean_temp_file {
+    close $LOG_FH;
+    unlink $LOG_FILE;
+}
