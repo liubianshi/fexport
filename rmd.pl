@@ -23,6 +23,7 @@ my %rmd_render_option = (
                            qq/slide_level = 2/, ], },
     beamer   => { out => "rmarkdown::beamer_presentation",
                   opt => [ qq/slide_level = 2/, ],
+                  to  => "beamer",
                   ext => "pdf", },
     html     => { out => "rmarkdown::html_document", ext => "html", opt => []},
     htmlbook => { out => "bookdown::html_document2", ext => "html", opt => []},

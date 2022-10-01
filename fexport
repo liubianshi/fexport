@@ -2,15 +2,12 @@
 # vim: set ft=perl nowrap fdm=marker
 
 # load module ================================================================= {{{1
-use v5.30;
+use v5.20;
 use strict;
-use Encode;
-use utf8;
 use File::Basename;
 use File::Spec;
 use Getopt::Long;
 use File::Temp qx/tempfile tempdir/;
-use IPC::Open3;
 use Cwd;
 use feature qw( switch );
 no warnings qw( experimental::smartmatch );
@@ -19,58 +16,52 @@ my $programdir = -l $0 ? dirname(readlink($0)) : dirname($0);
 require(File::Spec->catfile($programdir, "rmd.pl"));
 
 # parse parameters ====================================================== {{{1
-my ($LOG_FH, $LOG_FILE) = tempfile();
-$SIG{INT} = \&clean_temp_file;
-$SIG{TERM} = \&clean_temp_file;
-
 Getopt::Long::Configure ("bundling");
 GetOptions('to|t=s'      => \my $OUTFORMAT,
            'from|f=s'    => \my $FROM,
            'outfile|o=s' => \my $OUTFILE,
            'verbose|v'   => \my $VERBOSE,
-           'pandoc|p'    => \my $PANDOC_OPTS_USER,
+           'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
            'help|h'      => \my $HELP);
-
 if ($HELP) { help(); exit 0 }
 
-my $INFILE = do {
-    if (defined($ARGV[0])) {
-        $ARGV[0];
-    }
-    else {
-        my ($tpfh, $tpfile) = tempfile(suffix => '.' . ($FROM // "md"));
-        print $tpfh $_ while (<>);
-        close $tpfh;
-        $tpfile
-    }
-};
-$FROM //= $INFILE =~ m/\.(\w+)$/ ? $1 : "md";
-$OUTFORMAT   //= $OUTFILE =~ m/\.(\w+)$/ ? $1 : "html";
+$SIG{INT}  = \&clean_temp_file;
+$SIG{TERM} = \&clean_temp_file;
+my ($LOG_FH, $LOG_FILE) = tempfile();
+sub clean_temp_file {
+    close $LOG_FH;
+    unlink $LOG_FILE;
+}
+
+my $INFILE = $ARGV[0];
+$FROM      //= $INFILE  =~ m/\.(\w+)$/  ?  $1  :  "md";
+$OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/  ?  $1  :  "html";
+$OUTFILE   //= $INFILE  =~ s/\.\w+$/.$OUTFORMAT/r;
 ($FROM, $OUTFORMAT) = map {lc} $FROM, $OUTFORMAT;
-unless (defined($OUTFILE)) {
-    ($OUTFILE = $INFILE) =~ s/\.\w+$/.$OUTFORMAT/;
-}
 
-my @PANDOC = qw/pandoc +RTS -M512M -RTS/, $PANDOC_OPTS_USER // "";
-if ($FROM ~~ ["md", "markdown", "rmd", "rmarkdown"]) {
-    push @PANDOC, "--from=markdown+emoji+east_asian_line_breaks+autolink_bare_uris",
-} else {
-    push @PANDOC, "--from=$FROM",
-}
-push @PANDOC, "--lua-filter=rsbc.lua";
-
-my @MD_CONTENTS = ();
+my $PANDOC_CMD          = "pandoc +RTS -M512M -RTS";
+my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_uris";
+my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown");
+my @PANDOC              = ($PANDOC_CMD,
+                           $PANDOC_OPTS_USER // "",
+                           "--frome=" . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM),
+                           "--lua-filter=rsbc.lua") ;
 
 # parse input_file ============================================================ {{{1
-if ($FROM eq "rmd") {
-    my %rmdopt = rmd2md($INFILE, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE); 
-    $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
-    unless ($OUTFORMAT eq "beamer") {
-        $OUTFORMAT = $rmdopt{ext};
-    }
-}
-elsif ($FROM eq "md") {
+my @MD_CONTENTS;
+if ($FROM eq "md") {
     push @MD_CONTENTS, $_ while (<<>>);
+}
+elsif ($FROM eq "rmd") {
+    my ($tpfh, $tpfile) = tempfile(suffix => '.rmd');
+    unless (defined $INFILE) {
+        print $tpfh $_ while (<>);
+        close $tpfh;
+    }
+    my %rmdopt = rmd2md($INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS,
+                        \@PANDOC, $LOG_FILE); 
+    $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
+    $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
 }
 else {
     die "$FROM wasn't supperted yet!" 
@@ -80,7 +71,7 @@ else {
 # transform markdown contest to target format ================================= {{{1
 given ($OUTFORMAT) {
     when ("html") {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=-";
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=$OUTFILE";
         my @html_contents = ();
         md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
         str_adj_etal(\@html_contents);
@@ -89,7 +80,7 @@ given ($OUTFORMAT) {
     }
     when ("docx") {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=$OUTFILE";
-        md2file(\@MD_CONTENTS, $OUTFILE, \@PANDOC);
+        md2file(\@MD_CONTENTS, \@PANDOC);
         str_adj_word($OUTFILE);
     }
     when ("pdf") {
@@ -109,7 +100,7 @@ given ($OUTFORMAT) {
     }
     default {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=$OUTFILE";
-        md2file(\@MD_CONTENTS, $OUTFILE, \@PANDOC);
+        md2file(\@MD_CONTENTS, \@PANDOC);
     }
 }
 
@@ -120,21 +111,21 @@ say "$OUTFILE";
 clean_temp_file(); 
 exit 0;
 
+
 # function needed to used ===================================================== {{{1 
 # transform md content in array to target format in array --------------------- {{{2
 sub md2array {
     my ($in_contents, $out_contents, $pandoc) = @_;
-    my $pandoc_pid = open3(\*PIPIN, \*PIPOUT, \*PIPERR, join " ", @{$pandoc}) 
-        or die "open3() failed: $!";
-    print PIPIN join "", @{$in_contents};
-    close PIPIN;
-    @{$out_contents} = <PIPOUT>;
-    close PIPOUT;
+    md2file($in_contents, $pandoc);
+    open my $read_content, '<', $OUTFILE or die "cannot open file $OUTFILE: $!";
+    @{$out_contents} = <$read_content>;
+    close $read_content;
 }
+
 
 # transform md contests in array to target file ------------------------- {{{2
 sub md2file {
-    my ($in_contents, $outfile, $pandoc) = @_;
+    my ($in_contents, $pandoc) = @_;
     open my $pandoc_fh, "|-", join(" ", @{$pandoc}) or die "cannot run pandoc: $!";
     print $pandoc_fh join "", @{$in_contents};
     close $pandoc_fh
@@ -252,8 +243,3 @@ sub write2file {
     close $fh;
 }
 
-# 清理临时文件 ---------------------------------------------------------- {{{2
-sub clean_temp_file {
-    close $LOG_FH;
-    unlink $LOG_FILE;
-}
