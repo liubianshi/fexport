@@ -44,7 +44,7 @@ my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_u
 my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown");
 my @PANDOC              = ($PANDOC_CMD,
                            $PANDOC_OPTS_USER // "",
-                           "--frome=" . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM),
+                           "--from=" . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM),
                            "--lua-filter=rsbc.lua") ;
 
 # parse input_file ============================================================ {{{1

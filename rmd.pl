@@ -61,9 +61,8 @@ sub rmd2md {
                                          quiet             = TRUE,
                                          run_pandoc        = FALSE) };
     my $outfile = catfile($tdir, $basename . ".knit.md");
-
     system(qq{$R_CMD -e "$R_CONFIG $cmd" >>$logfile 2>>$logfile});
-    open my $md_fh, "<", $outfile or die "Cannot open rmarkdown output: $!";
+    open my $md_fh, "<", "$outfile" or die "Cannot open rmarkdown output: $!";
     @{$md_contents} = <$md_fh>;
     close $md_fh;
     unlink $outfile;
