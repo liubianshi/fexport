@@ -7,7 +7,8 @@ use strict;
 use File::Basename;
 use File::Spec;
 use Getopt::Long;
-use File::Temp qx/tempfile tempdir/;
+use warnings;
+use File::Temp qw/tempfile tempdir/;
 use Cwd;
 use feature qw( switch );
 no warnings qw( experimental::smartmatch );
@@ -25,8 +26,10 @@ GetOptions('to|t=s'      => \my $OUTFORMAT,
            'help|h'      => \my $HELP);
 if ($HELP) { help(); exit 0 }
 
-$SIG{INT}  = \&clean_temp_file;
-$SIG{TERM} = \&clean_temp_file;
+local %SIG = (%SIG,
+    INT  => \&clean_temp_file,
+    TERM => \&clean_temp_file,
+);
 my ($LOG_FH, $LOG_FILE) = tempfile();
 sub clean_temp_file {
     close $LOG_FH;
@@ -117,7 +120,8 @@ exit 0;
 sub md2array {
     my ($in_contents, $out_contents, $pandoc) = @_;
     md2file($in_contents, $pandoc);
-    open my $read_content, '<', $OUTFILE or die "cannot open file $OUTFILE: $!";
+    open my $read_content, "<", $OUTFILE
+        or die "cannot open file $OUTFILE: $!";
     @{$out_contents} = <$read_content>;
     close $read_content;
 }
@@ -126,7 +130,8 @@ sub md2array {
 # transform md contests in array to target file ------------------------- {{{2
 sub md2file {
     my ($in_contents, $pandoc) = @_;
-    open my $pandoc_fh, "|-", join(" ", @{$pandoc}) or die "cannot run pandoc: $!";
+    open my $pandoc_fh, "|-", join(" ", @{$pandoc})
+        or die "cannot run pandoc: $!\n";
     print $pandoc_fh join "", @{$in_contents};
     close $pandoc_fh
 }
@@ -135,11 +140,11 @@ sub md2file {
 sub pandoc_opts_default {
     my $to = shift;
     my ($datadir, $defaults, $defaultfile);
-    $datadir = qx/pandoc --version | grep -E '^User data'/;
+    $datadir = qx[pandoc --version | grep -E '^User data'];
     $datadir =~ s/^.*\s*User data directory:\s*([^\s]+)\n/$1/;
-    my $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
+    $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
     $defaults = "-d2$to" if -f $defaultfile;
-    if (qx/uname/ =~ /^Darwin/) {
+    if (qx/uname/ =~ m/^Darwin/) {
         $defaultfile  = File::Spec->catfile($datadir, "defaults", "2${to}_mac.yaml");
         $defaults = "-d2${to}_mac" if -f $defaultfile;
     }
@@ -158,13 +163,16 @@ sub str_adj_etal {
 sub str_adj_file {
     my ($file, $sub) = @_;
 
-    open my $infh, "<", $file or "Cannot open $file: $!";
+    open my $infh, "<", $file
+        or die "Cannot open $file: $!\n";
     my @contents = <$infh>;
     close $infh;
 
     $sub->(\@contents);
-    open my $outfh, ">", $file or "Cannot open $file: $!";
+    open my $outfh, ">", $file
+        or die "Cannot open $file: $!";
     print $outfh join "", @contents;
+    close $outfh;
 }
 
 # 对于 html 输出格式做特殊的文本替代处理 -------------------------------- {{{2
