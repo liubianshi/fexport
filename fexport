@@ -44,7 +44,7 @@ my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_u
 my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown");
 my @PANDOC              = ($PANDOC_CMD,
                            $PANDOC_OPTS_USER // "",
-                           "--from=" . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM),
+                           '--from="' . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
                            "--lua-filter=rsbc.lua") ;
 
 # parse input_file ============================================================ {{{1
@@ -71,7 +71,7 @@ else {
 # transform markdown contest to target format ================================= {{{1
 given ($OUTFORMAT) {
     when ("html") {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=$OUTFILE";
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=\"$OUTFILE\"";
         my @html_contents = ();
         md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
         str_adj_etal(\@html_contents);
@@ -79,7 +79,7 @@ given ($OUTFORMAT) {
         write2file(\@html_contents, $OUTFILE);
     }
     when ("docx") {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=$OUTFILE";
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
         md2file(\@MD_CONTENTS, \@PANDOC);
         str_adj_word($OUTFILE);
     }
@@ -87,7 +87,7 @@ given ($OUTFORMAT) {
         my @tex_contents = ();
         my $dir = tempdir();
         my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
-        push @PANDOC, pandoc_opts_default("tex"), "--to=latex", "--output=-";
+        push @PANDOC, pandoc_opts_default("tex"), "--to=latex", "--output=\"$OUTFILE\"";
 
         str_adj_md_contents_for_tex(\@MD_CONTENTS);
         md2array(\@MD_CONTENTS, \@tex_contents, \@PANDOC);
@@ -99,7 +99,7 @@ given ($OUTFORMAT) {
         });
     }
     default {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=$OUTFILE";
+        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=\"$OUTFILE\"";
         md2file(\@MD_CONTENTS, \@PANDOC);
     }
 }

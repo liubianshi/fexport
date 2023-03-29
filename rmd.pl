@@ -10,12 +10,17 @@ use File::Spec::Functions;
 my %rmd_render_option = (
     pdf      => { out => "rmarkdown::pdf_document", ext => "pdf"},
     pdfbook  => { out => "bookdown::pdf_document2", ext => "pdf"},
+    book_pdf => { out => "bookdown::markdown_document2",
+                  render => "bookdown::render_book",
+                  intermediates_dir => "$ENV{PWD}/_book",
+                  opt => [],
+                  ext => "md"},
     odt      => { out => "rmarkdown::odt_document", ext => "odt"},
     docx     => { out => "officedown::rdocx_document",
                   opt => [ qq/tables = list(caption = list(pre = 'Table:', sep = '  '))/, 
                            qq/plots  = list(caption = list(pre = 'Figure:', sep = '  '))/, ],
                   ext => "docx", },
-    docxbook => { out => "bookdwon::word_document2", ext => "docx", },
+    docxbook => { out => "bookdown::word_document2", ext => "docx", },
     pptx     => { out => "officedown::rpptx_document",
                   opt => [ qq/base_format = 'rmarkdown::powerpoint_presentation'/, 
                            qq/toc = TRUE/,
@@ -52,16 +57,16 @@ sub rmd2md {
                                      'R-script', 'box'))
     };
     my $basename  = fileparse($infile, qr/\.[Rr](md|markdown)/);
-    my $tdir      = tempdir();
     my %rmd       = %{$rmd_render_option{$to}};
+    my $tdir      = $rmd{intermediates_dir} // tempdir();
+    my $render    = $rmd{render} // "rmarkdown::render";
     $rmd{opt}     = defined($rmd{opt}) ? join(", ", @{$rmd{opt}}) : "";
-    my $cmd       = qq{rmarkdown::render('$infile',
-                                         output_format     = $rmd{out}($rmd{opt}),
-                                         intermediates_dir = '$tdir',
-                                         quiet             = TRUE,
-                                         run_pandoc        = FALSE) };
+    my $cmd       = qq{$render('$infile',
+                               output_format     = $rmd{out}($rmd{opt}),
+                               intermediates_dir = '$tdir'
+                               ) };
     my $outfile = catfile($tdir, $basename . ".knit.md");
-    system(qq{$R_CMD -e "$R_CONFIG $cmd" >>$logfile 2>>$logfile});
+    system(qq{$R_CMD -e "$R_CONFIG $cmd"});
     open my $md_fh, "<", "$outfile" or die "Cannot open rmarkdown output: $!";
     @{$md_contents} = <$md_fh>;
     close $md_fh;
