@@ -42,6 +42,7 @@ $OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/  ?  $1  :  "html";
 $OUTFILE   //= $INFILE  =~ s/\.\w+$/.$OUTFORMAT/r;
 ($FROM, $OUTFORMAT) = map {lc} $FROM, $OUTFORMAT;
 
+my $PANDOC_RUN          = 0;
 my $PANDOC_CMD          = "pandoc +RTS -M512M -RTS";
 my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_uris";
 my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown");
@@ -61,10 +62,19 @@ elsif ($FROM eq "rmd") {
         print $tpfh $_ while (<>);
         close $tpfh;
     }
-    my %rmdopt = rmd2md($INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS,
-                        \@PANDOC, $LOG_FILE); 
-    $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
+    my %rmdopt = knit_rmd($INFILE // $tpfile,
+                          $OUTFORMAT,
+                          \@MD_CONTENTS,
+                          \@PANDOC,
+                          $LOG_FILE); 
     $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
+    if ($rmdopt{run_pandoc} eq "FALSE") {
+        $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
+    }
+    else {
+        $OUTFILE = $rmdopt{outfile};
+        $PANDOC_RUN = 1;
+    }
 }
 else {
     die "$FROM wasn't supperted yet!" 
@@ -82,8 +92,10 @@ given ($OUTFORMAT) {
         write2file(\@html_contents, $OUTFILE);
     }
     when ("docx") {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
-        md2file(\@MD_CONTENTS, \@PANDOC);
+        unless ($PANDOC_RUN) {
+            push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
+            md2file(\@MD_CONTENTS, \@PANDOC);
+        }
         str_adj_word($OUTFILE);
     }
     when ("pdf") {
@@ -154,8 +166,8 @@ sub pandoc_opts_default {
 # 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------- {{{2
 sub str_adj_etal {
     for (@{shift()}) {
-        s{ ([a-zA-Z]) (,\s|\s) 等                    }{ $1$2et al. }gx;
-        s{ \s (等 (?:\s\( | ,\s  | <\/a> | <\/w:t>)) }{ $1         }gx;
+        s{ (?<=[a-zA-Z]) (,\s|\s) 等                    }{$1et al.}mxg;
+        s{ \s (等 (?:\s\( | ,\s  | <\/a> | <\/w:t>)) }{$1}gx;
     }
 }
 
@@ -166,12 +178,13 @@ sub str_adj_file {
     open my $infh, "<", $file
         or die "Cannot open $file: $!\n";
     my @contents = <$infh>;
+    chomp(@contents);
     close $infh;
 
-    $sub->(\@contents);
+    my $newcontests_ref = $sub->(\@contents);
     open my $outfh, ">", $file
         or die "Cannot open $file: $!";
-    print $outfh join "", @contents;
+    print $outfh join "", @$newcontests_ref;
     close $outfh;
 }
 
@@ -215,32 +228,89 @@ sub str_adj_word {
     my $cwd = getcwd();
     my $dir = tempdir( CLEANUP => 1 );
     system(qq/unzip -q "$file" -d "$dir"/);
+    unlink $file;
     chdir "$dir";
 
     my $document_name = File::Spec->catfile("word", "document.xml");
     str_adj_file($document_name, \&str_adj_word_documents);
     my $footnotes_name = File::Spec->catfile("word", "footnotes.xml");
-    str_adj_file($footnotes_name, \&str_adj_word_fottnotes);
+    str_adj_file($footnotes_name, \&str_adj_word_footnotes);
 
-    system(qq/zip -r -q "$file" */);
+    system(qq/zip -r -q "$file" * && mv "$file" "$cwd"/) == 0
+        or die "zip error: $!";
     chdir $cwd;
 }
 
 sub str_adj_word_documents {
-    my $contents = shift;
-    str_adj_etal($contents);
+    my $ori_content_ref = shift;
+    my $content_ref = str_group_by_paragraph($ori_content_ref, "docx");
+    str_adj_etal($content_ref);
 
-    my $tag_start    = qr/ <w:r> <w:t \s xml:space="preserve"> /x;
-    my $tag_end      = qr/ <\/w:t> <\/w:r>                     /x;
-    my $digits_sign  = qr/ [^\(]+ \(\d{4},                     /x;
+    my $tag_start   = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
+    my $tag_end     = qr/ <\/w:t> \s* <\/w:r>                     /imx;
+    my $tag_space   = qr/ $tag_start \s* $tag_end                 /imx;
+    my $tag_par_l   = qr/ $tag_start \s* \( \s* $tag_end          /imx;
+    my $tag_par_r   = qr/ $tag_start \s* \) \s* $tag_end          /imx;
+    my $tag_ascii   = qr/ [A-z0-9_,;.\-()?:]                      /imx;
+    my $digits_sign = qr/ [^\(]+ \(\d{4},                         /imx;
 
-    for (@{$contents}) {
-        s/$tag_start \s $tag_end ($tag_start $digits_sign)/$1/gx;
+    my $start = q{<w:r><w:t xml:space="preserve">};
+    my $end   = q{</w:t></w:r>};
+    for (@{$content_ref}) {
+        s/$tag_start \s+ $tag_end ($tag_start $digits_sign)/$1/gimx;
+        # Convert English brackets after Chinese characters into Chinese brackets
+        s{ (?<!$tag_ascii) (?<before>\s* $tag_end \s*)
+            (?:$tag_space \s*)* \s*
+            $tag_par_l (?<after>.*?) $tag_par_r
+        }{ $+{before}
+            . $start . "（" . $end
+            . $+{after}
+            . $start . "）" . $end
+        }eimxg;
+        s{
+            (?<!$tag_ascii|\s) \s* \( \s* (?<after>.*?) $tag_par_r
+        }{
+            "（" . $+{after} . $start . "）" . $end
+        }iegmx;
+        s{
+            (?<!$tag_ascii|\s) \s* \( \s* (?<after>[^<]*?) \) \s*
+        }{
+            "（" . $+{after} . "）"
+        }iegmx;
     }
+    return $content_ref;
 }
 
-sub str_adj_word_fottnotes {
-    str_adj_etal(shift);
+sub str_group_by_paragraph {
+    my ($content_ref, $ext) = @_;
+    my %regex_paragraph_end_symbol = (
+        docx => qr{\<\/w\:p\>},
+        md   => qr{\A\s*\z},
+    );
+    my $end_symbol = $regex_paragraph_end_symbol{$ext};
+    my @contents = @$content_ref;
+    for (@contents) {
+        s{($end_symbol)}{\n$1\n}gimx unless "\n" =~ m/$end_symbol/;
+        s{\n\s*\n}{\n}mxg;
+    }
+
+    my @contents_by_par;
+    my $par = "";
+    for my $l (@contents) {
+        $par .= $l;
+        if ($l =~ m{$end_symbol}) {
+            push @contents_by_par, $par;
+            $par = "";
+        }
+    }
+    push @contents_by_par, $par unless $par eq "";
+    return \@contents_by_par;
+}
+
+sub str_adj_word_footnotes {
+    my $content_ref = shift;
+    str_adj_etal($content_ref);
+    return $content_ref;
 }
 
 # 将数组中的内容写入指定文件 -------------------------------------------- {{{2
