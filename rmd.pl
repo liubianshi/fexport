@@ -13,22 +13,31 @@ my %rmd_render_option = (
         ext => "pdf"
     },
     pdfbook => {
-        out => "bookdown::pdf_document2",
-        ext => "pdf",
+        render            => "bookdown::render_book",
+        out               => "bookdown::pdf_document2",
+        outfile           => "draft.knit.md",
+        intermediates_dir => "_cache",
+        ext               => "pdf",
+        opt               => [ q/number_section = FALSE/,
+                               q/keep_md        = TRUE/,
+                               q/tables         = list(caption = list(pre = '表', sep = '  '))/,
+                               q/plots          = list(caption = list(pre = '图', sep = '  '))/,
+                           ],
     },
     rdocxbook => { 
         out               => "officedown::rdocx_document",
         render            => "bookdown::render_book",
         outfile           => "draft.docx",
-        intermediates_dir => ".",
-        output_dir        => "_book",
+        intermediates_dir => "_cache",
+        output_dir        => ".",
         run_pandoc        => "TRUE",
         opt               => [ q/base_format    = 'bookdown::word_document2'/,
                                q/number_section = FALSE/,
                                q/pandoc_args    = c('-d2docx', '--lua-filter=rsbc.lua')/,
                                q/keep_md        = TRUE/,
                                q/tables         = list(caption = list(pre = '表', sep = '  '))/,
-                               q/plots          = list(caption = list(pre = '图', sep = '  '))/, ],
+                               q/plots          = list(caption = list(pre = '图', sep = '  '))/,
+                           ],
         ext               => "docx",
     },
     mdbook => { 
@@ -43,10 +52,10 @@ my %rmd_render_option = (
     docxbook => {
         out               => "bookdown::word_document2",
         render            => "bookdown::render_book",
-        intermediates_dir => ".",
-        outfile           => "_book/draft.docx",
+        intermediates_dir => "_cache",
+        output_dir        => ".",
+        outfile           => "draft.docx",
         run_pandoc        => "TRUE",
-        output_dir        => "_book",
         opt               => [ q/pandoc_args    = c('-d2docx', '--lua-filter=rsbc.lua')/,
                                q/number_section = FALSE/,
                                q/keep_md  = TRUE/,        ],
@@ -82,6 +91,14 @@ sub pandoc_lua_filter_from_r {
     return @filter;
 }
 
+my %rmd_default = (
+    render => "rmarkdown::render",
+    run_pandoc => "FALSE",
+    intermediates_dir => tempdir(),
+    opt => [],
+);
+
+
 sub knit_rmd {
     my ($infile, $to, $md_contents, $pandoc_options, $logfile) = @_;
     # $infile, 待转换的原文件
@@ -93,21 +110,20 @@ sub knit_rmd {
     my $basename   = fileparse($infile, qr/\.[Rr](md|markdown)/);
     $rmd{opt}      = defined($rmd{opt}) ? join(", ", @{$rmd{opt}}) : "";
     $rmd{run_pandoc} //= "FALSE";
-    my $run_pandoc = $rmd{run_pandoc} // "FALSE";
     my $render     = $rmd{render}            // "rmarkdown::render";
     my $tdir       = $rmd{intermediates_dir} // tempdir();
     my $odir       = $rmd{output_dir}        // $tdir;
-    $rmd{outfile}  = catfile($tdir, $rmd{outfile} // $basename . ".knit.md");
+    $rmd{outfile}  = catfile($odir, $rmd{outfile} // $basename . ".knit.md");
 
     my $tempdir = tempdir();
     my $perl_cmd_in_R = q|perl -MFile::Copy -pli -E \\'|
-           . "\n" .  q|my \$rdocx_embed_graph = q<r:embed=\"(/tmp/Rtmp[A-z0-9]+)/(file[A-z0-9]+.[A-z0-9]+)\">;|
-           . "\n" . qq|my \\\$tdir = q<$tempdir>;|
-           . "\n" .  q|if (m{\$rdocx_embed_graph}) {
+           . "\n\t\t" .  q|my \$rdocx_embed_graph = q<r:embed=\"(/tmp/Rtmp[A-z0-9]+)/(file[A-z0-9]+.[A-z0-9]+)\">;|
+           . "\n\t\t" . qq|my \\\$tdir = q<$tempdir>;|
+           . "\n\t\t" .  q|if (m{\$rdocx_embed_graph}) {
                         copy(qq<\$1/\$2>, \$tdir) ;
                         s{\$rdocx_embed_graph}{r:embed=\"\$tdir/\$2\"};
-                        }|
-            . "\n" . qq|\\' \\"$rmd{outfile}\\"|
+                    }|
+            . "\n\t\t" . qq|\\' \\"$rmd{outfile}\\"|
             ;
 
     my $R_CMD = "Rscript --no-init-file --no-save --no-restore --verbose";
@@ -115,27 +131,41 @@ sub knit_rmd {
         options(box.path = file.path(Sys.getenv('HOME'), 'Repositories', 'R-script', 'box'))
         diy_output_format <- $rmd{out}($rmd{opt})
         diy_output_format[['clean_supporting']] <- FALSE
-        $render(
+        res <- $render(
             '$infile',
             output_format     = diy_output_format,
             run_pandoc        = $rmd{run_pandoc},
             output_dir        = '$odir',
             intermediates_dir = '$tdir'
         )
-        if (!$rmd{run_pandoc}) {
-            system(\'$perl_cmd_in_R\n\')
+
+        knit_meta <- attr(res, 'knit_meta')
+        if (!is.null(knit_meta)) {
+            knit_meta <- purrr::map(knit_meta, ~ {
+                if (class(.x) == 'latex_dependency') {
+                    c(gettextf('\\\\\\usepackage{%s}', .x[['name']]), .x[['extra_lines']])
+                } else { NULL }
+            }) |> unlist()
+            fileConn<-file('_bookdown_files/$tdir/knit_meta')
+            writeLines(knit_meta, fileConn)
+            close(fileConn)
         }
     };
-    system(qq{$R_CMD -e "$cmd"});
+    system(qq{$R_CMD -e "$cmd"}) == 0 or die "Rmd Parse error!";
+    if (-f "_bookdown_files/$tdir/knit_meta") {
+        push @{$pandoc_options}, "--include-in-header=" . "_bookdown_files/$tdir/knit_meta" 
+    }
 
     if ($rmd{run_pandoc} eq "FALSE") {
+        if (-d "_bookdown_files") {
+            $rmd{outfile} = catfile("_bookdown_files", $rmd{outfile});
+        }
+
         open my $md_fh, "<", "$rmd{outfile}"
             or die "Cannot open rmarkdown output $rmd{outfile}: $!";
         @{$md_contents} = <$md_fh>;
         close $md_fh;
         unlink $rmd{outfile};
-        rmdir $tdir;
-
         push @{$pandoc_options}, map {'--lua-filter="' . $_ . '"'} pandoc_lua_filter_from_r;
         push @{$pandoc_options}, "--variable=graphics";
     }

@@ -7,14 +7,16 @@ use strict;
 use File::Basename;
 use File::Spec;
 use Getopt::Long;
+use Data::Dumper qw(Dumper);
 use warnings;
 use File::Temp qw/tempfile tempdir/;
 use Cwd;
 use feature qw( switch );
+use YAML;
 no warnings qw( experimental::smartmatch );
 
-my $programdir = -l $0 ? dirname(readlink($0)) : dirname($0);
-require(File::Spec->catfile($programdir, "rmd.pl"));
+my $PROGRAM_DIR = -l $0 ? dirname(readlink($0)) : dirname($0);
+require(File::Spec->catfile($PROGRAM_DIR, "rmd.pl"));
 
 # parse parameters ====================================================== {{{1
 Getopt::Long::Configure ("bundling");
@@ -26,10 +28,7 @@ GetOptions('to|t=s'      => \my $OUTFORMAT,
            'help|h'      => \my $HELP);
 if ($HELP) { help(); exit 0 }
 
-local %SIG = (%SIG,
-    INT  => \&clean_temp_file,
-    TERM => \&clean_temp_file,
-);
+local %SIG = (%SIG, INT  => \&clean_temp_file, TERM => \&clean_temp_file);
 my ($LOG_FH, $LOG_FILE) = tempfile();
 sub clean_temp_file {
     close $LOG_FH;
@@ -51,7 +50,12 @@ my @PANDOC              = ($PANDOC_CMD,
                            '--from="' . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
                            "--lua-filter=rsbc.lua") ;
 
-# parse input_file ============================================================ {{{1
+# system("cp", "-f", "test.docx", "draft.docx");
+# str_adj_word("draft.docx");
+# say "comp";
+# exit 0;
+
+# parse input_file ====================================================== {{{1
 my @MD_CONTENTS;
 if ($FROM eq "md") {
     push @MD_CONTENTS, $_ while (<<>>);
@@ -62,13 +66,13 @@ elsif ($FROM eq "rmd") {
         print $tpfh $_ while (<>);
         close $tpfh;
     }
-    my %rmdopt = knit_rmd($INFILE // $tpfile,
+    my %rmdopt = knit_rmd2($INFILE // $tpfile,
                           $OUTFORMAT,
                           \@MD_CONTENTS,
                           \@PANDOC,
                           $LOG_FILE); 
     $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
-    if ($rmdopt{run_pandoc} eq "FALSE") {
+    if ($rmdopt{run_pandoc} eq "no") {
         $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
     }
     else {
@@ -80,8 +84,7 @@ else {
     die "$FROM wasn't supperted yet!" 
 }
 
-# adjust markdown contents ==================================================== {{{1
-# transform markdown contest to target format ================================= {{{1
+# transform markdown contest to target format =========================== {{{1
 given ($OUTFORMAT) {
     when ("html") {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=\"$OUTFILE\"";
@@ -93,7 +96,8 @@ given ($OUTFORMAT) {
     }
     when ("docx") {
         unless ($PANDOC_RUN) {
-            push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
+            push @PANDOC, pandoc_opts_default($OUTFORMAT),
+                "--to=docx", "--output=\"$OUTFILE\"";
             md2file(\@MD_CONTENTS, \@PANDOC);
         }
         str_adj_word($OUTFILE);
@@ -102,14 +106,16 @@ given ($OUTFORMAT) {
         my @tex_contents = ();
         my $dir = tempdir();
         my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
-        push @PANDOC, pandoc_opts_default("tex"), "--to=latex", "--output=\"$OUTFILE\"";
+        $OUTFILE =~ s/pdf$/tex/;
+        push @PANDOC, pandoc_opts_default("tex"), "--output=\"$OUTFILE\"", "--to=latex";
 
         str_adj_md_contents_for_tex(\@MD_CONTENTS);
         md2array(\@MD_CONTENTS, \@tex_contents, \@PANDOC);
         str_adj_tex(\@tex_contents);
         write2file(\@tex_contents, $intermidaite);
+        $OUTFILE =~ s/tex$/pdf/;
         system(qq{
-            latexmk -xelatex -quiet -outdir="$dir" "$intermidaite" >>$LOG_FILE 2>>$LOG_FILE
+            latexmk -quiet -xelatex -outdir="$dir" "$intermidaite" >>$LOG_FILE 2>>$LOG_FILE
             mv $dir/intermidaite.pdf "$OUTFILE"
         });
     }
@@ -236,8 +242,8 @@ sub str_adj_word {
     my $footnotes_name = File::Spec->catfile("word", "footnotes.xml");
     str_adj_file($footnotes_name, \&str_adj_word_footnotes);
 
-    system(qq/zip -r -q "$file" * && mv "$file" "$cwd"/) == 0
-        or die "zip error: $!";
+    system(qq/zip -r -q "$file" */) == 0 or die "zip error: $!";
+    system("mv", $file, $cwd);
     chdir $cwd;
 }
 
@@ -320,4 +326,42 @@ sub write2file {
     print $fh $_ for (@{$content});
     close $fh;
 }
+
+# 将 Rmarkdown 文件转化成 Markdown -------------------------------------- {{{2
+sub knit_rmd2 {
+    my ($infile, $to, $md_contents_ref, $pandoc_opt_ref, $logfile) = @_;
+    # $infile, 待转换的原文件
+    # $to，转换的目标格式
+    # $md_contest, markdown 文件的内容，列表引用格式
+    # $pandoc_options, pandoc 选项，列表引用格式
+
+    my $rscript_path = File::Spec->catfile($PROGRAM_DIR, "parse_rmd.R");
+    my $rmd_opt_path = File::Spec->catfile($PROGRAM_DIR, "rmd_option.yaml");
+    my ($result_fh, $result) = tempfile();
+    close $result_fh;
+
+    if (system(qq{$rscript_path $to "$infile" "$rmd_opt_path" "$result"})) {
+        unlink $result;
+        die "Failed to parse $infile: $?"
+    };
+    my %rmd = %{YAML::LoadFile($result)};
+    unlink $result;
+
+    if (defined $rmd{knit_meta} and -f $rmd{knit_meta}) {
+        push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
+    }
+    
+    if ($rmd{run_pandoc} eq 'no') {
+        open my $md_fh, "<", $rmd{outfile}
+            or die "Cannot open rmarkdown output $rmd{outfile}: $!";
+        @{$md_contents_ref} = <$md_fh>;
+        close $md_fh;
+
+        push @{$pandoc_opt_ref},
+            map {q<--lua-filter="> . $_ . q<">} @{$rmd{lua_filters}};
+        push @{$pandoc_opt_ref}, "--variable=graphics";
+    }
+    return %rmd;
+}
+
 
