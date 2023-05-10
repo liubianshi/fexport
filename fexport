@@ -133,7 +133,7 @@ clean_temp_file();
 exit 0;
 
 
-# function needed to used ===================================================== {{{1 
+# function needed to used =============================================== {{{1
 # transform md content in array to target format in array --------------------- {{{2
 sub md2array {
     my ($in_contents, $out_contents, $pandoc) = @_;
@@ -172,7 +172,7 @@ sub pandoc_opts_default {
 # 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------- {{{2
 sub str_adj_etal {
     for (@{shift()}) {
-        s{ (?<=[a-zA-Z]) (,\s|\s) 等                    }{$1et al.}mxg;
+        s{ (?<=[a-zA-Z]) (,\s|\s) 等                 }{$1et al.}mxg;
         s{ \s (等 (?:\s\( | ,\s  | <\/a> | <\/w:t>)) }{$1}gx;
     }
 }
