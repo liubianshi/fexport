@@ -44,9 +44,13 @@ rdocxbook:
         pre: '图'
         sep: '  '
 docx:
+  render: 'bookdown::render_book'
   out: "officedown::rdocx_document"
   intermediates_dir: "."
+  output_dir: "."
+  outfile: '_main.docx'
   ext: 'docx'
+  run_pandoc: true
   opt: 
     tables:
       caption:
