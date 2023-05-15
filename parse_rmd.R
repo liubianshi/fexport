@@ -1,8 +1,8 @@
 #!/usr/bin/env -S Rscript --no-init-file --no-save --no-restore
 require(yaml)
 
-parse_args <- function() {
-    args <- commandArgs(trailingOnly = TRUE)
+parse_args <- function(args = NULL) {
+    if (is.null(args)) args <- commandArgs(trailingOnly = TRUE)
     stopifnot(length(args) >= 3L)
 
     args_list <- as.list(args[1:4])
@@ -79,6 +79,7 @@ write_knit_meta <- function(pares_res, intermediates_dir) {
 args          <- parse_args()
 meta          <- do.call(get_meta, args)
 output_format <- rlang::exec(rlang::parse_expr(meta$out), !!!(meta$opt))
+
 parse_res     <- rlang::exec(rlang::parse_expr(meta$render),
                              output_format     = output_format,
                              run_pandoc        = meta$run_pandoc,
