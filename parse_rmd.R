@@ -48,17 +48,16 @@ get_meta <- function(outformat, infile, yaml_file, ...) {
         outfile           = sub("\\.[Rr](md|markdown)$", ".knit.md", infile),
         render            = "rmarkdown::render",
         run_pandoc        = FALSE,
-        opt               = list(latex_engine     = "xelatex",
-                                clean_supporting = FALSE),
-        intermediates_dir = tempdir(),
-        output_dir        = tempdir()
+        opt               = list(fig_caption = TRUE),
+        intermediates_dir = ".",
+        output_dir        = "."
     )
     config_meta <- yaml::read_yaml(yaml_file)[[outformat]]
     complete_config_info(config_meta, default_meta)
 }
 write_knit_meta <- function(pares_res, intermediates_dir) {
     knit_meta <- attr(parse_res, 'knit_meta')
-    if (is.null(knit_meta)) return(NULL)
+    if (length(knit_meta) == 0) return(NULL)
 
     knit_meta <- purrr::map(knit_meta, ~ {
         if (class(.x) == 'latex_dependency') {
@@ -81,6 +80,7 @@ meta          <- do.call(get_meta, args)
 output_format <- rlang::exec(rlang::parse_expr(meta$out), !!!(meta$opt))
 
 parse_res     <- rlang::exec(rlang::parse_expr(meta$render),
+                             input             = meta$infile,
                              output_format     = output_format,
                              run_pandoc        = meta$run_pandoc,
                              output_dir        = meta$output_dir,

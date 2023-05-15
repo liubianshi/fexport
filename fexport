@@ -115,7 +115,7 @@ given ($OUTFORMAT) {
         write2file(\@tex_contents, $intermidaite);
         $OUTFILE =~ s/tex$/pdf/;
         system(qq{
-            latexmk -quiet -xelatex -outdir="$dir" "$intermidaite" >>$LOG_FILE 2>>$LOG_FILE
+            latexmk -xelatex -outdir="$dir" "$intermidaite"
             mv $dir/intermidaite.pdf "$OUTFILE"
         });
     }
@@ -351,9 +351,10 @@ sub knit_rmd2 {
         push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
     }
     
+    say $rmd{outfile};
     if ($rmd{run_pandoc} eq 'no') {
         open my $md_fh, "<", $rmd{outfile}
-            or die "Cannot open rmarkdown output $rmd{outfile}: $!";
+            or die "Cannot open rmarkdown output: $!";
         @{$md_contents_ref} = <$md_fh>;
         close $md_fh;
 

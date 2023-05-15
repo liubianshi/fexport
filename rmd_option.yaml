@@ -1,3 +1,6 @@
+pdf:
+  out: "rmarkdown::pdf_document"
+  ext: "pdf"
 pdfbook:
   render: 'bookdown::render_book'
   out: 'bookdown::pdf_document2'
