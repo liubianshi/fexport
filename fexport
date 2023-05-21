@@ -230,6 +230,9 @@ sub str_adj_tex {
     my $pre_line;
     my @table_label;
     for (@{$content_ref}) {
+        s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx; 
+        s/$quote_left    ($words) $quote_right   /‘$1’/gx;
+        s/\s+((?:表|图|公式)\~\\ref\{\w+\:\w+\})/$1/gx;
         if (m/^\\label\{(tbl\:[^}]+)\}/) {
             if ($pre_line =~ m/^\\hypertarget\{$1\}/) {
                 chomp($_);
