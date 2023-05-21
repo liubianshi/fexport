@@ -1,6 +1,16 @@
 pdf:
+  render: 'rmarkdown::render'
+  intermediates_dir: "."
+  output_dir: "."
   out: "rmarkdown::pdf_document"
   ext: "pdf"
+  opt:
+    pandoc_args: 
+      - "-d2tex"
+      - "--filter=pandoc-crossref"
+      - "--lua-filter=rm-test-table-line.lua"
+      - "--citeproc"
+      - "--lua-filter=rsbc.lua"
 pdfbook:
   render: 'bookdown::render_book'
   out: 'bookdown::pdf_document2'
@@ -12,6 +22,12 @@ pdfbook:
   opt: 
     number_section: false
     keep_md: true
+    pandoc_args: 
+      - "-d2tex"
+      - "--filter=pandoc-crossref"
+      - "--lua-filter=rm-test-table-line.lua"
+      - "--citeproc"
+      - "--lua-filter=rsbc.lua"
     tables:
       caption:
         pre: '表'
@@ -23,7 +39,7 @@ pdfbook:
 rdocxbook:
   render: 'bookdown::render_book'
   out: 'officedown::rdocx_document'
-  outfile: 'draft.docx'
+  outfile: '_main.docx'
   output_dir: "."
   intermediates_dir: "_cache"
   run_pandoc: true
@@ -35,6 +51,9 @@ rdocxbook:
     pandoc_args: 
       - "-d2docx"
       - "--lua-filter=rsbc.lua"
+      - "--filter=pandoc-crossref"
+      - "--lua-filter=rm-test-table-line.lua"
+      - "--citeproc"
     tables:
       caption:
         pre: '表'
@@ -44,14 +63,20 @@ rdocxbook:
         pre: '图'
         sep: '  '
 docx:
-  render: 'bookdown::render_book'
+  render: 'rmarkdown::render'
   out: "officedown::rdocx_document"
   intermediates_dir: "."
   output_dir: "."
-  outfile: '_main.docx'
   ext: 'docx'
   run_pandoc: true
   opt: 
+    keep_md: true
+    pandoc_args: 
+      - "-d2docx"
+      - "--filter=pandoc-crossref"
+      - "--lua-filter=rm-test-table-line.lua"
+      - "--citeproc"
+      - "--lua-filter=rsbc.lua"
     tables:
       caption:
         pre: '表'

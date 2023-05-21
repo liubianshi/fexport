@@ -45,10 +45,14 @@ my $PANDOC_RUN          = 0;
 my $PANDOC_CMD          = "pandoc +RTS -M512M -RTS";
 my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_uris";
 my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown");
+my @PANDOC_FILTERS      = ('--filter=pandoc-crossref',
+                           '--lua-filter=rm-test-table-line.lua',
+                           '--citeproc',
+                           '--lua-filter=rsbc.lua');
 my @PANDOC              = ($PANDOC_CMD,
-                           $PANDOC_OPTS_USER // "",
                            '--from="' . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
-                           "--lua-filter=rsbc.lua") ;
+                           @PANDOC_FILTERS,
+                           $PANDOC_OPTS_USER // "");
 
 # system("cp", "-f", "test.docx", "draft.docx");
 # str_adj_word("draft.docx");
@@ -148,6 +152,7 @@ sub md2array {
 # transform md contests in array to target file ------------------------- {{{2
 sub md2file {
     my ($in_contents, $pandoc) = @_;
+    say join " ", @{$pandoc};
     open my $pandoc_fh, "|-", join(" ", @{$pandoc})
         or die "cannot run pandoc: $!\n";
     print $pandoc_fh join "", @{$in_contents};
@@ -221,10 +226,21 @@ sub str_adj_tex {
     my $words = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
     my $quote_left = qr/\`/;
     my $quote_right = qr/\'/;
-
+    
+    my $pre_line;
+    my @table_label;
     for (@{$content_ref}) {
-        s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx; 
-        s/$quote_left    ($words) $quote_right   /‘$1’/gx;
+        if (m/^\\label\{(tbl\:[^}]+)\}/) {
+            if ($pre_line =~ m/^\\hypertarget\{$1\}/) {
+                chomp($_);
+                push @table_label, '\\caption{' . $_ . "}\\tabularnewline\n";
+                $_ = "";
+            }
+        }
+        if (m/^\\begin\{\w+table\}/) {
+            $_ .= (pop @table_label) // "";
+        }
+        $pre_line = $_;
     }
 }
 
@@ -259,6 +275,17 @@ sub str_adj_word_documents {
     my $tag_par_r   = qr/ $tag_start \s* \) \s* $tag_end          /imx;
     my $tag_ascii   = qr/ [A-z0-9_,;.\-()?:]                      /imx;
     my $digits_sign = qr/ [^\(]+ \(\d{4},                         /imx;
+    my $nobreak_space = qr/ /u;
+    my $table_ref   = qr/表$nobreak_space\d+/u;
+    my $figure_ref  = qr/图$nobreak_space\d+/u;
+    my $equation_ref  = qr/公式$nobreak_space\(\d+\)/u;
+    
+    # for match table caption
+    my $bookmarkStart = qr{w:bookmarkStart \s+ w:id="\d+" \s w:name="[\w:]+"/>}imx;
+    my $pStart = qr{<w:p>};
+    my $pPrStart = qr{<w:pPr>};
+    my $pPrEnd = qr{</w:pPr>};
+    my $tblPrefix = qr/表 \d+:/;
 
     my $start = q{<w:r><w:t xml:space="preserve">};
     my $end   = q{</w:t></w:r>};
@@ -278,11 +305,24 @@ sub str_adj_word_documents {
         }{
             "（" . $+{after} . $start . "）" . $end
         }iegmx;
+
+        # 替换交叉引用时引入的空格问题
         s{
-            (?<!$tag_ascii|\s) \s* \( \s* (?<after>[^<]*?) \) \s*
+            ((?<!$tag_ascii)|\s) \s* \( \s* (?<after>[^<)]{3,}) \) \s*
         }{
             "（" . $+{after} . "）"
         }iegmx;
+        s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
+
+        # 解决 pandoc-crossref 和 flextable 的兼容问题
+        # 通过 lua-filter, pandoc-crossref 可以为 flextable 表格编号
+        # 单表格标题会变成普通文本，
+        # 我不知道如何在 pandoc 层面解决这个问题
+        # 因此，只能采取正则匹配的笨办法
+        s{($bookmarkStart \s+ $pStart \s+ $pPrStart \s+)
+            <w:pStyle \s+ w:val="BodyText"/>
+            (\s* $pPrEnd \s* $tag_start \s* $tblPrefix)
+        }{$1<w:pStyle w:val="TableCaption"/>$2}gimx;
     }
     return $content_ref;
 }

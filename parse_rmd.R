@@ -45,7 +45,7 @@ complete_config_info <- function(config, default) {
 get_meta <- function(outformat, infile, yaml_file, ...) {
     default_meta <- list(
         infile            = infile,
-        outfile           = sub("\\.[Rr](md|markdown)$", ".knit.md", infile),
+        outfile           = sub("\\.[Rr](md|markdown)$", paste0(".", outformat), infile),
         render            = "rmarkdown::render",
         run_pandoc        = FALSE,
         opt               = list(fig_caption = TRUE),
@@ -53,6 +53,9 @@ get_meta <- function(outformat, infile, yaml_file, ...) {
         output_dir        = "."
     )
     config_meta <- yaml::read_yaml(yaml_file)[[outformat]]
+    if (outformat == "pdf") {
+        config_meta$outfile = sub("\\.[Rr](md|markdown)$", ".knit.md", infile)
+    }
     complete_config_info(config_meta, default_meta)
 }
 write_knit_meta <- function(pares_res, intermediates_dir) {
