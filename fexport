@@ -108,7 +108,7 @@ given ($OUTFORMAT) {
     }
     when ("pdf") {
         my @tex_contents = ();
-        my $dir = tempdir();
+        my $dir = tempdir(CLEANUP => 1);
         my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
         $OUTFILE =~ s/pdf$/tex/;
         push @PANDOC, pandoc_opts_default("tex"), "--output=\"$OUTFILE\"", "--to=latex";
@@ -119,7 +119,7 @@ given ($OUTFORMAT) {
         write2file(\@tex_contents, $intermidaite);
         $OUTFILE =~ s/tex$/pdf/;
         system(qq{
-            latexmk -xelatex -outdir="$dir" "$intermidaite"
+            latexmk -xelatex -outdir="$dir" "$intermidaite" >>$LOG_FILE
             mv $dir/intermidaite.pdf "$OUTFILE"
         });
     }
