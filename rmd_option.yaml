@@ -39,7 +39,7 @@ pdfbook:
 rdocxbook:
   render: 'bookdown::render_book'
   out: 'officedown::rdocx_document'
-  outfile: '_main.docx'
+  outfile: 'draft.docx'
   output_dir: "."
   intermediates_dir: "_cache"
   run_pandoc: true
