@@ -51,6 +51,7 @@ my @PANDOC_FILTERS      = ('--filter=pandoc-crossref',
                            '--lua-filter=rsbc.lua');
 my @PANDOC              = ($PANDOC_CMD,
                            '--from="' . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
+                           $VERBOSE ? '--verbose' : "",
                            @PANDOC_FILTERS,
                            $PANDOC_OPTS_USER // "");
 
@@ -118,10 +119,9 @@ given ($OUTFORMAT) {
         str_adj_tex(\@tex_contents);
         write2file(\@tex_contents, $intermidaite);
         $OUTFILE =~ s/tex$/pdf/;
-        system(qq{
-            latexmk -xelatex -outdir="$dir" "$intermidaite" >>$LOG_FILE
-            mv $dir/intermidaite.pdf "$OUTFILE"
-        });
+        my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermidaite"/
+                             : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermidaite"/;
+        system(qq{ $pdfmk && mv $dir/intermidaite.pdf "$OUTFILE" });
     }
     default {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=\"$OUTFILE\"";

@@ -53,7 +53,6 @@ rdocxbook:
       - "--lua-filter=rsbc.lua"
       - "--filter=pandoc-crossref"
       - "--lua-filter=rm-test-table-line.lua"
-      - "--citeproc"
     tables:
       caption:
         pre: '表'
@@ -88,6 +87,9 @@ docx:
 beamer:
   out: 'rmarkdown::beamer_presentation'
   to: "beamer"
+  theme: "Madrid"
+  template: "~/useScript/beamerChinese.latex"
+  fontthem: "structurebold"
   ext: "pdf"
   opt:
     slide_level: 2

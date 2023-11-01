@@ -53,7 +53,7 @@ get_meta <- function(outformat, infile, yaml_file, ...) {
         output_dir        = "."
     )
     config_meta <- yaml::read_yaml(yaml_file)[[outformat]]
-    if (outformat %in% c("pdf", "html")) {
+    if (outformat %in% c("pdf", "html", "beamer")) {
         config_meta$outfile = sub("\\.[Rr](md|markdown)$", ".knit.md", infile)
     }
     complete_config_info(config_meta, default_meta)
