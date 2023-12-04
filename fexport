@@ -7,6 +7,7 @@ use strict;
 use File::Basename;
 use File::Spec;
 use Getopt::Long;
+use List::Util qw/any/;
 use Data::Dumper qw(Dumper);
 use warnings;
 use File::Temp qw/tempfile tempdir/;
@@ -50,7 +51,8 @@ my @PANDOC_FILTERS      = ('--filter=pandoc-crossref',
                            '--citeproc',
                            '--lua-filter=rsbc.lua');
 my @PANDOC              = ($PANDOC_CMD,
-                           '--from="' . ($FROM ~~ @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
+                           '--from="' . (
+                               any {$_ eq $FROM} @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
                            $VERBOSE ? '--verbose' : "",
                            @PANDOC_FILTERS,
                            $PANDOC_OPTS_USER // "");
@@ -90,24 +92,23 @@ else {
 }
 
 # transform markdown contest to target format =========================== {{{1
-given ($OUTFORMAT) {
-    when ("html") {
+if ($OUTFORMAT eq "html") {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=\"$OUTFILE\"";
         my @html_contents = ();
         md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
         str_adj_etal(\@html_contents);
         str_adj_html(\@html_contents);
         write2file(\@html_contents, $OUTFILE);
-    }
-    when ("docx") {
+}
+elsif ( $OUTFORMAT eq "docx") {
         unless ($PANDOC_RUN) {
             push @PANDOC, pandoc_opts_default($OUTFORMAT),
                 "--to=docx", "--output=\"$OUTFILE\"";
             md2file(\@MD_CONTENTS, \@PANDOC);
         }
         str_adj_word($OUTFILE);
-    }
-    when ("pdf") {
+}
+elsif ($OUTFORMAT eq "pdf") {
         my @tex_contents = ();
         my $dir = tempdir(CLEANUP => 1);
         my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
@@ -122,12 +123,12 @@ given ($OUTFORMAT) {
         my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermidaite"/
                              : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermidaite"/;
         system(qq{ $pdfmk && mv $dir/intermidaite.pdf "$OUTFILE" });
-    }
-    default {
+}
+else {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=\"$OUTFILE\"";
         md2file(\@MD_CONTENTS, \@PANDOC);
-    }
 }
+
 
 if ($VERBOSE) {
     print $_ while (<$LOG_FH>);
@@ -272,6 +273,7 @@ sub str_adj_word_documents {
     str_adj_etal($content_ref);
 
     my $tag_start   = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
+    my $tag_start_s = qr/ <w:r> \s* <w:t>                         /imx;
     my $tag_end     = qr/ <\/w:t> \s* <\/w:r>                     /imx;
     my $tag_space   = qr/ $tag_start \s* $tag_end                 /imx;
     my $tag_par_l   = qr/ $tag_start \s* \( \s* $tag_end          /imx;
@@ -326,6 +328,17 @@ sub str_adj_word_documents {
             <w:pStyle \s+ w:val="BodyText"/>
             (\s* $pPrEnd \s* $tag_start \s* $tblPrefix)
         }{$1<w:pStyle w:val="TableCaption"/>$2}gimx;
+
+        # 删除中文标点符号后的空格
+        my $tag_chinese_punc = qr/[（）。，：、]/u;
+        s{ \s* ($tag_chinese_punc) \s* ($tag_end) \s* $tag_space }{$1$2}gimux;
+
+        # 直角引号处理
+        my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
+        my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
+        my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
+        s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
+        s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
     }
     return $content_ref;
 }
@@ -357,8 +370,17 @@ sub str_group_by_paragraph {
 }
 
 sub str_adj_word_footnotes {
-    my $content_ref = shift;
+    my $ori_content_ref = shift;
+    my $content_ref = str_group_by_paragraph($ori_content_ref, "docx");
     str_adj_etal($content_ref);
+    for (@$content_ref) {
+        # 直角引号处理
+        my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
+        my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
+        my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
+        s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
+        s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
+    }
     return $content_ref;
 }
 
