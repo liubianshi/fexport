@@ -1,4 +1,5 @@
-#!/usr/bin/env perl
+package rmd;
+
 use strict;
 use warnings;
 use utf8;

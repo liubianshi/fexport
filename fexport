@@ -9,37 +9,47 @@ use File::Spec;
 use Getopt::Long;
 use List::Util qw/any/;
 use Data::Dumper qw(Dumper);
+use File::Copy qw(copy);
 use warnings;
 use File::Temp qw/tempfile tempdir/;
-use Cwd;
+use Cwd qw(getcwd abs_path);
 use feature qw( switch );
 use YAML;
 no warnings qw( experimental::smartmatch );
-
-my $PROGRAM_DIR = -l $0 ? dirname(readlink($0)) : dirname($0);
-require(File::Spec->catfile($PROGRAM_DIR, "rmd.pl"));
+use FindBin qw($RealBin);
 
 # parse parameters ====================================================== {{{1
 Getopt::Long::Configure ("bundling");
 GetOptions('to|t=s'      => \my $OUTFORMAT,
            'from|f=s'    => \my $FROM,
            'outfile|o=s' => \my $OUTFILE,
+           'dirname|d=s' => \my $DIRNAME,
            'verbose|v'   => \my $VERBOSE,
            'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
            'help|h'      => \my $HELP);
 if ($HELP) { help(); exit 0 }
-
+my @files_needed_clean = ();
 local %SIG = (%SIG, INT  => \&clean_temp_file, TERM => \&clean_temp_file);
 my ($LOG_FH, $LOG_FILE) = tempfile();
 sub clean_temp_file {
     close $LOG_FH;
     unlink $LOG_FILE;
+    unlink $_ for @files_needed_clean;
 }
-
+my $current_pwd = getcwd();
 my $INFILE = $ARGV[0];
+if (defined $INFILE and File::Spec->file_name_is_absolute($INFILE)) {
+    $DIRNAME //= dirname($INFILE);
+    $INFILE = File::Spec->abs2rel($INFILE, $DIRNAME);
+}
+chdir $DIRNAME if defined $DIRNAME;
+
 $FROM      //= $INFILE  =~ m/\.(\w+)$/  ?  $1  :  "md";
 $OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/  ?  $1  :  "html";
 $OUTFILE   //= $INFILE  =~ s/\.\w+$/.$OUTFORMAT/r;
+if (File::Spec->file_name_is_absolute($OUTFILE)) {
+    $OUTFILE = File::Spec->abs2rel($OUTFILE, getcwd())
+}
 ($FROM, $OUTFORMAT) = map {lc} $FROM, $OUTFORMAT;
 
 my $PANDOC_RUN          = 0;
@@ -57,11 +67,6 @@ my @PANDOC              = ($PANDOC_CMD,
                            @PANDOC_FILTERS,
                            $PANDOC_OPTS_USER // "");
 
-# system("cp", "-f", "test.docx", "draft.docx");
-# str_adj_word("draft.docx");
-# say "comp";
-# exit 0;
-
 # parse input_file ====================================================== {{{1
 my @MD_CONTENTS;
 if ($FROM eq "md") {
@@ -73,22 +78,18 @@ elsif ($FROM eq "rmd") {
         print $tpfh $_ while (<>);
         close $tpfh;
     }
-    my %rmdopt = knit_rmd2($INFILE // $tpfile,
-                          $OUTFORMAT,
-                          \@MD_CONTENTS,
-                          \@PANDOC,
-                          $LOG_FILE); 
+    my %rmdopt = knit_rmd2($INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE); 
     $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
     if ($rmdopt{run_pandoc} eq "no") {
         $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
     }
     else {
-        $OUTFILE = $rmdopt{outfile};
+        copy $rmdopt{outfile} => $OUTFILE unless $OUTFILE eq $rmdopt{outfile};
         $PANDOC_RUN = 1;
     }
 }
 else {
-    die "$FROM wasn't supperted yet!" 
+    die "$FROM wasn't supported yet!" 
 }
 
 # transform markdown contest to target format =========================== {{{1
@@ -102,8 +103,7 @@ if ($OUTFORMAT eq "html") {
 }
 elsif ( $OUTFORMAT eq "docx") {
         unless ($PANDOC_RUN) {
-            push @PANDOC, pandoc_opts_default($OUTFORMAT),
-                "--to=docx", "--output=\"$OUTFILE\"";
+            push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
             md2file(\@MD_CONTENTS, \@PANDOC);
         }
         str_adj_word($OUTFILE);
@@ -133,7 +133,9 @@ else {
 if ($VERBOSE) {
     print $_ while (<$LOG_FH>);
 }
-say "$OUTFILE";
+say "\n";
+if ($current_pwd eq getcwd()) { say "$OUTFILE" }
+else                          { say abs_path($OUTFILE) }
 clean_temp_file(); 
 exit 0;
 
@@ -153,7 +155,7 @@ sub md2array {
 # transform md contests in array to target file ------------------------- {{{2
 sub md2file {
     my ($in_contents, $pandoc) = @_;
-    say join " ", @{$pandoc};
+    say {$LOG_FH} join " ", @{$pandoc};
     open my $pandoc_fh, "|-", join(" ", @{$pandoc})
         or die "cannot run pandoc: $!\n";
     print {$pandoc_fh} join "", @{$in_contents};
@@ -402,12 +404,12 @@ sub knit_rmd2 {
     # $md_contest, markdown 文件的内容，列表引用格式
     # $pandoc_options, pandoc 选项，列表引用格式
 
-    my $rscript_path = File::Spec->catfile($PROGRAM_DIR, "parse_rmd.R");
-    my $rmd_opt_path = File::Spec->catfile($PROGRAM_DIR, "rmd_option.yaml");
+    my $rscript_path = File::Spec->catfile($RealBin, "parse_rmd.R");
+    my $rmd_opt_path = File::Spec->catfile($RealBin, "rmd_option.yaml");
     my ($result_fh, $result) = tempfile();
     close $result_fh;
 
-    if (system(qq{$rscript_path $to "$infile" "$rmd_opt_path" "$result"})) {
+    if (system(qq{$rscript_path $to "$infile" "$rmd_opt_path" "$result"}) != 0) {
         unlink $result;
         die "Failed to parse $infile: $?"
     };
@@ -418,15 +420,19 @@ sub knit_rmd2 {
         push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
     }
     
-    say $rmd{outfile};
     if ($rmd{run_pandoc} eq 'no') {
         open my $md_fh, "<", $rmd{outfile}
             or die "Cannot open rmarkdown output: $!";
         @{$md_contents_ref} = <$md_fh>;
         close $md_fh;
+        for (@{$rmd{lua_filters}}) {
+            push @{$pandoc_opt_ref}, qq(--lua-filter="$_");
+            if ($_ =~ m{rmarkdown/rmarkdown/lua/pagebreak.lua$}) {
+                $ENV{RMARKDOWN_LUA_SHARED} = s{pagebreak\.lua}{shared.lua}r;
+            }
+        }
 
-        push @{$pandoc_opt_ref},
-            map {q<--lua-filter="> . $_ . q<">} @{$rmd{lua_filters}};
+        push @files_needed_clean, $rmd{outfile};
         push @{$pandoc_opt_ref}, "--variable=graphics";
     }
     return %rmd;

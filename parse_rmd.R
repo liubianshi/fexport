@@ -1,4 +1,4 @@
-#!/usr/bin/env -S Rscript --no-init-file --no-save --no-restore
+#!/usr/bin/env -S Rscript --no-init-file --no-save --no-restore --quiet
 require(yaml)
 
 parse_args <- function(args = NULL) {
@@ -45,7 +45,7 @@ complete_config_info <- function(config, default) {
 get_meta <- function(outformat, infile, yaml_file, ...) {
     default_meta <- list(
         infile            = infile,
-        outfile           = sub("\\.[Rr](md|markdown)$", paste0(".", outformat), infile),
+        outfile           = sub("\\.[Rr]?(md|markdown)$", paste0(".", outformat), infile),
         render            = "rmarkdown::render",
         run_pandoc        = FALSE,
         opt               = list(fig_caption = TRUE),
@@ -54,10 +54,11 @@ get_meta <- function(outformat, infile, yaml_file, ...) {
     )
     config_meta <- yaml::read_yaml(yaml_file)[[outformat]]
     if (outformat %in% c("pdf", "html", "beamer")) {
-        config_meta$outfile = sub("\\.[Rr](md|markdown)$", ".knit.md", infile)
+        config_meta$outfile = sub("\\.[Rr]?(md|markdown)$", ".knit.md", infile)
     }
     complete_config_info(config_meta, default_meta)
 }
+
 write_knit_meta <- function(pares_res, intermediates_dir) {
     knit_meta <- attr(parse_res, 'knit_meta')
     if (length(knit_meta) == 0) return(NULL)
@@ -78,21 +79,40 @@ write_knit_meta <- function(pares_res, intermediates_dir) {
     return(outfile)
 }
 
+knit <- function(meta) {
+    output_format <- rlang::exec(rlang::parse_expr(meta$out), !!!(meta$opt))
+    infile = meta$infile
+
+    if (grepl("\\.md$", infile, perl = TRUE)) {
+        tempfile = sub("\\.md$", ".Rmd", infile, perl = TRUE)
+        if (file.exists(tempfile)) {
+            stop(sprintf("%s exists!", tempfile))
+        }
+        file.copy(infile, tempfile, overwrite = TRUE)
+        meta$infile = tempfile
+        on.exit(file.remove(tempfile))
+    }
+
+    parse_res     <- rlang::exec(rlang::parse_expr(meta$render),
+                                input             = meta$infile,
+                                output_format     = output_format,
+                                run_pandoc        = meta$run_pandoc,
+                                output_dir        = meta$output_dir,
+                                output_file       = meta$outfile,
+                                quiet             = FALSE,
+                                intermediates_dir = meta$intermediates_dir)
+
+    invisible(parse_res)
+}
+
 args          <- parse_args()
 meta          <- do.call(get_meta, args)
-output_format <- rlang::exec(rlang::parse_expr(meta$out), !!!(meta$opt))
-
-parse_res     <- rlang::exec(rlang::parse_expr(meta$render),
-                             input             = meta$infile,
-                             output_format     = output_format,
-                             run_pandoc        = meta$run_pandoc,
-                             output_dir        = meta$output_dir,
-                             intermediates_dir = meta$intermediates_dir)
+parse_res     <- knit(meta)
 
 if (!is.null(meta$superfluous_dir)) {
     meta$output_dir <- file.path(meta$superfluous_dir, meta$output_dir)
 }
-meta$outfile     <- file.path(meta$output_dir, meta$outfile)
+meta$outfile     <- file.path(meta$output_dir, parse_res)
 meta$knit_meta   <- write_knit_meta(parse_res, meta$output_dir)
 meta$lua_filters <- get_pandoc_lua_filter()
 
@@ -102,5 +122,5 @@ if (is.null(args$result_file)) {
 
 yaml::write_yaml(meta, args$result_file)
 
-cat("Rmarkdown Parse Success\n")
+cat("Rmarkdown Parse Success\n\n")
 # END
