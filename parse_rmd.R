@@ -1,4 +1,4 @@
-#!/usr/bin/env -S Rscript --no-init-file --no-save --no-restore --quiet
+#!/usr/bin/env -S Rscript --no-save --no-restore
 require(yaml)
 
 parse_args <- function(args = NULL) {
@@ -49,8 +49,8 @@ get_meta <- function(outformat, infile, yaml_file, ...) {
         render            = "rmarkdown::render",
         run_pandoc        = FALSE,
         opt               = list(fig_caption = TRUE),
-        intermediates_dir = ".",
-        output_dir        = "."
+        intermediates_dir = "./cache/draft",
+        output_dir        = "./cache/draft"
     )
     config_meta <- yaml::read_yaml(yaml_file)[[outformat]]
     if (outformat %in% c("pdf", "html", "beamer")) {
@@ -97,10 +97,10 @@ knit <- function(meta) {
                                 input             = meta$infile,
                                 output_format     = output_format,
                                 run_pandoc        = meta$run_pandoc,
-                                output_dir        = meta$output_dir,
                                 output_file       = meta$outfile,
-                                quiet             = FALSE,
-                                intermediates_dir = meta$intermediates_dir)
+                                output_dir        = meta$output_dir,
+                                intermediates_dir = meta$intermediates_dir,
+                                quiet             = FALSE)
 
     invisible(parse_res)
 }
@@ -112,7 +112,13 @@ parse_res     <- knit(meta)
 if (!is.null(meta$superfluous_dir)) {
     meta$output_dir <- file.path(meta$superfluous_dir, meta$output_dir)
 }
-meta$outfile     <- file.path(meta$output_dir, parse_res)
+meta$outfile <-
+  if (grepl("^/", parse_res)) {
+    parse_res
+  } else {
+    file.path(meta$output_dir, parse_res)
+}
+
 meta$knit_meta   <- write_knit_meta(parse_res, meta$output_dir)
 meta$lua_filters <- get_pandoc_lua_filter()
 
@@ -120,6 +126,7 @@ if (is.null(args$result_file)) {
     args$result_file <- file.path(meta$output_dir, "rmd_meta.yaml")
 }
 
+print(meta)
 yaml::write_yaml(meta, args$result_file)
 
 cat("Rmarkdown Parse Success\n\n")

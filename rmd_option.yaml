@@ -1,6 +1,6 @@
 pdf:
   render: 'rmarkdown::render'
-  intermediates_dir: "."
+  intermediates_dir: "./cache/draft"
   output_dir: "."
   out: "rmarkdown::pdf_document"
   ext: "pdf"

@@ -25,7 +25,7 @@ my %rmd_render_option = (
                                q/plots          = list(caption = list(pre = '图', sep = '  '))/,
                            ],
     },
-    rdocxbook => { 
+    rdocxbook => {
         out               => "officedown::rdocx_document",
         render            => "bookdown::render_book",
         outfile           => "draft.docx",
@@ -41,7 +41,7 @@ my %rmd_render_option = (
                            ],
         ext               => "docx",
     },
-    mdbook => { 
+    mdbook => {
         out               => "bookdown::markdown_document2",
         render            => "bookdown::render_book",
         intermediates_dir => ".",
@@ -65,11 +65,11 @@ my %rmd_render_option = (
     odt      => { out => "rmarkdown::odt_document", ext => "odt"},
     docx     => { out => "officedown::rdocx_document",
                   intermediates_dir => ".",
-                  opt => [ qq/tables = list(caption = list(pre = 'Table:', sep = '  '))/, 
+                  opt => [ qq/tables = list(caption = list(pre = 'Table:', sep = '  '))/,
                            qq/plots  = list(caption = list(pre = 'Figure:', sep = '  '))/, ],
                   ext => "docx", },
     pptx     => { out => "officedown::rpptx_document",
-                  opt => [ qq/base_format = 'rmarkdown::powerpoint_presentation'/, 
+                  opt => [ qq/base_format = 'rmarkdown::powerpoint_presentation'/,
                            qq/toc = TRUE/,
                            qq/toc_depth = 1/,
                            qq/slide_level = 2/, ], },
@@ -86,7 +86,7 @@ sub pandoc_lua_filter_from_r {
     my @filter = map {$Rlib . $_} (
         "/bookdown/rmarkdown/lua/custom-environment.lua",
         "/rmarkdown/rmarkdown/lua/pagebreak.lua",
-        "/rmarkdown/rmarkdown/lua/latex-div.lua", 
+        "/rmarkdown/rmarkdown/lua/latex-div.lua",
     );
     push @filter, "rsbc.lua";
     return @filter;
@@ -154,7 +154,7 @@ sub knit_rmd {
     };
     system(qq{$R_CMD -e "$cmd"}) == 0 or die "Rmd Parse error!";
     if (-f "_bookdown_files/$tdir/knit_meta") {
-        push @{$pandoc_options}, "--include-in-header=" . "_bookdown_files/$tdir/knit_meta" 
+        push @{$pandoc_options}, "--include-in-header=" . "_bookdown_files/$tdir/knit_meta"
     }
 
     if ($rmd{run_pandoc} eq "FALSE") {

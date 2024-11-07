@@ -8,15 +8,17 @@ use File::Basename;
 use File::Spec;
 use Getopt::Long;
 use List::Util qw/any/;
-use Data::Dumper qw(Dumper);
-use File::Copy qw(copy);
+use File::Copy qw(copy move);
+use Scope::Guard qw(guard);
 use warnings;
 use File::Temp qw/tempfile tempdir/;
 use Cwd qw(getcwd abs_path);
 use feature qw( switch );
-use YAML;
+use YAML qw(LoadFile DumpFile Dump);
 no warnings qw( experimental::smartmatch );
 use FindBin qw($RealBin);
+use File::Copy qw(cp);
+use Fatal qw(open close);
 
 # parse parameters ====================================================== {{{1
 Getopt::Long::Configure ("bundling");
@@ -26,6 +28,7 @@ GetOptions('to|t=s'      => \my $OUTFORMAT,
            'dirname|d=s' => \my $DIRNAME,
            'verbose|v'   => \my $VERBOSE,
            'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
+           'keep|k'      => \my $KEEP_INTERMEDIATES,
            'help|h'      => \my $HELP);
 if ($HELP) { help(); exit 0 }
 my @files_needed_clean = ();
@@ -78,7 +81,7 @@ elsif ($FROM eq "rmd") {
         print $tpfh $_ while (<>);
         close $tpfh;
     }
-    my %rmdopt = knit_rmd2($INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE); 
+    my %rmdopt = knit_rmd2($INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE);
     $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
     if ($rmdopt{run_pandoc} eq "no") {
         $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
@@ -88,41 +91,45 @@ elsif ($FROM eq "rmd") {
         $PANDOC_RUN = 1;
     }
 }
+elsif ($FROM eq "qmd") {
+  render_qmd($INFILE, $OUTFORMAT, $OUTFILE);
+  exit 0;
+}
 else {
-    die "$FROM wasn't supported yet!" 
+    die "$FROM wasn't supported yet!"
 }
 
 # transform markdown contest to target format =========================== {{{1
 if ($OUTFORMAT eq "html") {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=\"$OUTFILE\"";
-        my @html_contents = ();
-        md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
-        str_adj_etal(\@html_contents);
-        str_adj_html(\@html_contents);
-        write2file(\@html_contents, $OUTFILE);
+  push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=\"$OUTFILE\"";
+  my @html_contents = ();
+  md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
+  str_adj_etal(\@html_contents);
+  str_adj_html(\@html_contents);
+  write2file(\@html_contents, $OUTFILE);
 }
 elsif ( $OUTFORMAT eq "docx") {
-        unless ($PANDOC_RUN) {
-            push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
-            md2file(\@MD_CONTENTS, \@PANDOC);
-        }
-        str_adj_word($OUTFILE);
+  unless ($PANDOC_RUN) {
+    push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
+    md2file(\@MD_CONTENTS, \@PANDOC);
+  }
+  str_adj_word($OUTFILE);
 }
 elsif ($OUTFORMAT eq "pdf") {
         my @tex_contents = ();
         my $dir = tempdir(CLEANUP => 1);
-        my $intermidaite = File::Spec->catfile($dir, "intermidaite.tex");
+        my $intermediate = File::Spec->catfile($dir, "intermediate.tex");
         $OUTFILE =~ s/pdf$/tex/;
         push @PANDOC, pandoc_opts_default("tex"), "--output=\"$OUTFILE\"", "--to=latex";
 
         str_adj_md_contents_for_tex(\@MD_CONTENTS);
         md2array(\@MD_CONTENTS, \@tex_contents, \@PANDOC);
         str_adj_tex(\@tex_contents);
-        write2file(\@tex_contents, $intermidaite);
+        write2file(\@tex_contents, $intermediate);
         $OUTFILE =~ s/tex$/pdf/;
-        my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermidaite"/
-                             : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermidaite"/;
-        system(qq{ $pdfmk && mv $dir/intermidaite.pdf "$OUTFILE" });
+        my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
+                             : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
+        system(qq{ $pdfmk && mv $dir/intermediate.pdf "$OUTFILE" });
 }
 else {
         push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=\"$OUTFILE\"";
@@ -136,7 +143,7 @@ if ($VERBOSE) {
 say "\n";
 if ($current_pwd eq getcwd()) { say "$OUTFILE" }
 else                          { say abs_path($OUTFILE) }
-clean_temp_file(); 
+clean_temp_file();
 exit 0;
 
 
@@ -150,7 +157,6 @@ sub md2array {
     @{$out_contents} = <$read_content>;
     close $read_content;
 }
-
 
 # transform md contests in array to target file ------------------------- {{{2
 sub md2file {
@@ -229,11 +235,11 @@ sub str_adj_tex {
     my $words = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
     my $quote_left = qr/\`/;
     my $quote_right = qr/\'/;
-    
+
     my $pre_line;
     my @table_label;
     for (@{$content_ref}) {
-        s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx; 
+        s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx;
         s/$quote_left    ($words) $quote_right   /‘$1’/gx;
         s/\s+((?:表|图|公式)\~\\ref\{\w+\:\w+\})/$1/gx;
         if (m/^\\label\{(tbl\:[^}]+)\}/) {
@@ -286,7 +292,7 @@ sub str_adj_word_documents {
     my $table_ref     = qr/表$nobreak_space\d+/u;
     my $figure_ref    = qr/图$nobreak_space\d+/u;
     my $equation_ref  = qr/公式$nobreak_space\(\d+\)/u;
-    
+
     # for match table caption
     my $bookmarkStart = qr{
         w:bookmarkStart \s+ w:id="\d+" \s w:name="[\w:]+"/>
@@ -413,13 +419,14 @@ sub knit_rmd2 {
         unlink $result;
         die "Failed to parse $infile: $?"
     };
-    my %rmd = %{YAML::LoadFile($result)};
+    my %rmd = %{LoadFile($result)};
     unlink $result;
 
     if (defined $rmd{knit_meta} and -f $rmd{knit_meta}) {
         push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
     }
-    
+
+    say $rmd{outfile};
     if ($rmd{run_pandoc} eq 'no') {
         open my $md_fh, "<", $rmd{outfile}
             or die "Cannot open rmarkdown output: $!";
@@ -437,5 +444,143 @@ sub knit_rmd2 {
     }
     return %rmd;
 }
+
+# Merge yaml ------------------------------------------------------------ {{{2
+sub merge_yaml {
+  my ($hash1, $hash2) = @_;
+  for my $key (keys %$hash2) {
+    if (exists $hash1->{$key}) {
+      if (ref $hash1->{$key} eq 'HASH' && ref $hash2->{$key} eq 'HASH') {
+        # 递归合并嵌套的哈希
+        merge_yaml($hash1->{$key}, $hash2->{$key});
+      } elsif (ref $hash1->{$key} eq 'ARRAY' && ref $hash2->{$key} eq 'ARRAY') {
+        # 合并数组并去除重复项
+        my %seen;
+        @{$hash1->{$key}} = grep { !$seen{$_}++ } (@{$hash1->{$key}}, @{$hash2->{$key}});
+      } else {
+        # 覆盖值
+        $hash1->{$key} = $hash2->{$key};
+      }
+    } else {
+      # 直接添加新键
+      $hash1->{$key} = $hash2->{$key};
+    }
+  }
+}
+
+# Substitute environment variable in yaml file -------------------------- {{{2
+sub substitute_environment_variable {
+  my $obj = shift or return;
+  if (ref $obj eq 'SCALAR') {
+    $$obj =~ s/\$[{]?([\w]+)[}]?/$ENV{$1}/e;
+  }
+  elsif (ref $obj eq 'ARRAY') {
+    for (@$obj) {
+      if (ref $_ eq q[]) { substitute_environment_variable(\$_) }
+      else               { substitute_environment_variable($_)  }
+    }
+  }
+  elsif (ref $obj eq 'HASH') {
+    for (keys %$obj) {
+      if (ref $obj->{$_} eq q[]) { substitute_environment_variable(\ $obj->{$_} ) }
+      else                       { substitute_environment_variable($obj->{$_} )  }
+    }
+  }
+  else {
+    die "Only support ref vaiable: $?";
+  }
+}
+
+# Load pandoc default yaml ---------------------------------------------- {{{2
+sub load_pandoc_defaults {
+  my $file = shift or return;
+  return unless -r $file;
+
+  my $yaml = LoadFile($file);
+  substitute_environment_variable($yaml);
+  return $yaml;
+}
+
+
+# 处理 quarto 文件 ------------------------------------------------------ {{{2
+sub render_qmd {
+  my ($infile, $outformat, $outfile) = @_;
+
+  # quarto / pandoc 的 --from 格式和输出文件的后缀名不完全一样，比如
+  # beamer 对应的后缀名应该是 pdf
+  # 另外，有时并不需要 quarto 直接得到最后的文件，因此，需要一个中间格式
+  # 比如，生成 pdf 时，我希望将其渲染成 latex 文件，然后在通过 latexmk 将中间文
+  # 件渲染成最终的 pdf 文件
+  my $quarto_options = LoadFile(File::Spec->catfile($RealBin, "quarto_option.yaml"));
+  my $quarto_target = $quarto_options->{$outformat}{intermediate} // $outformat;
+  my $quarto_target_ext = $quarto_options->{$outformat}{intermediate_ext} // $quarto_target;
+  $outfile =~ s/\.\w+$/"." . $quarto_target_ext/e if $quarto_target_ext ne $outformat;
+  $outformat = $quarto_options->{$outformat}{ext} // $outformat;
+
+  # 在用户已经定义了 _metadata.yml 时，临时保存，并确保在函数退出后恢复
+  my $metadata_exist = 0;
+  my $metadata_generated = 0;
+  my $guard = guard {
+    unlink "_metadata.yml" if $metadata_generated;
+    cp "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
+  };
+  if (-e "_metadata.qml") {
+    cp "_metadata.yml" => "_metadata.yml_bck" && $metadata_exist = 1;
+  }
+
+  # 处理元数据，载入 pandoc 的默认配置文件，并整合 quarto 的 _metadata.yml 文件
+  # 替换默认配置文件中环境变量
+  my $meta_data = load_pandoc_defaults("$ENV{HOME}/.pandoc/defaults/2${quarto_target}.yaml");
+  merge_yaml($meta_data, LoadFile("_metadata.qml_bck")) if -e -r "_metadata.yml_bck";
+  # 解决 quarto 找不到 pandoc template 对应的文件的问题
+  for (keys %$meta_data) {
+    if ($_ eq "template" and not File::Spec->file_name_is_absolute($meta_data->{$_})) {
+      next unless ref $meta_data->{$_} eq q[];
+      $meta_data->{$_} .= ".$quarto_target" unless $meta_data->{$_} =~ m/\.\w+$/;
+      $meta_data->{$_} = File::Spec->catfile($ENV{HOME}, ".pandoc", "templates", $meta_data->{$_})
+    }
+  }
+  DumpFile("_metadata.yml", $meta_data) and $metadata_generated = 1;
+
+  # 使用 quarto render 文件
+  system("quarto", "render", "$infile", "--to", $quarto_target, "--output", $outfile) == 0
+    or die "Failed to run quarto: $?";
+
+  # 进一步处理 quarto render 后的文件
+  if ($outformat eq "html") {
+    open my $read_content, "<", $outfile;
+    my @html_contents = <$read_content>;
+    close $read_content;
+    str_adj_etal(\@html_contents);
+    str_adj_html(\@html_contents);
+    write2file(\@html_contents, $OUTFILE);
+  }
+  elsif ($outformat eq "pdf") {
+    open my $read_content, "<", $outfile
+        or die "cannot open file $outfile: $!";
+    my @tex_contents = <$read_content>;
+    close $read_content;
+
+    # 微调 tex 文件
+    str_adj_tex(\@tex_contents);
+
+    # 将 tex 文件转换成 pdf 文件
+    my $dir = tempdir(CLEANUP => 1);
+    my $intermediate = File::Spec->catfile($dir, "intermediate.tex");
+    write2file(\@tex_contents, $intermediate);
+    my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
+                         : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
+    system($pdfmk) == 0 or die "Failed to render latex file: $?";
+    unlink $outfile unless $KEEP_INTERMEDIATES;
+
+    my $target_file = ($outfile =~ s/${quarto_target_ext}$/pdf/r);
+    move "$dir/intermediate.pdf" => $target_file;
+    say $target_file;
+  }
+  elsif ($outformat eq "docx") {
+    str_adj_word($outfile);
+  }
+}
+
 
 
