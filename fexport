@@ -295,9 +295,7 @@ sub str_adj_word_documents {
     my $equation_ref  = qr/公式$nobreak_space\(\d+\)/u;
 
     # for match table caption
-    my $bookmarkStart = qr{
-        w:bookmarkStart \s+ w:id="\d+" \s w:name="[\w:]+"/>
-    }imx;
+    my $bookmarkStart = qr{w:bookmarkStart \s+ w:id="\d+" \s w:name="[\w:]+"/> }imx;
     my $pStart    = qr{<w:p>};
     my $pPrStart  = qr{<w:pPr>};
     my $pPrEnd    = qr{</w:pPr>};
