@@ -522,16 +522,16 @@ sub render_qmd {
   my $metadata_generated = 0;
   my $guard = guard {
     unlink "_metadata.yml" if $metadata_generated;
-    cp "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
+    move "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
   };
-  if (-e "_metadata.qml") {
-    cp "_metadata.yml" => "_metadata.yml_bck" && $metadata_exist = 1;
+  if (-e "_metadata.yml") {
+    copy "_metadata.yml" => "_metadata.yml_bck" and $metadata_exist = 1;
   }
 
   # 处理元数据，载入 pandoc 的默认配置文件，并整合 quarto 的 _metadata.yml 文件
   # 替换默认配置文件中环境变量
   my $meta_data = load_pandoc_defaults("$ENV{HOME}/.pandoc/defaults/2${quarto_target}.yaml");
-  merge_yaml($meta_data, LoadFile("_metadata.qml_bck")) if -e -r "_metadata.yml_bck";
+  merge_yaml($meta_data, LoadFile("_metadata.yml_bck")) if -e -r "_metadata.yml_bck";
   # 解决 quarto 找不到 pandoc template 对应的文件的问题
   for (keys %$meta_data) {
     if ($_ eq "template" and not File::Spec->file_name_is_absolute($meta_data->{$_})) {
@@ -543,7 +543,15 @@ sub render_qmd {
   DumpFile("_metadata.yml", $meta_data) and $metadata_generated = 1;
 
   # 使用 quarto render 文件
-  system("quarto", "render", "$infile", "--to", $quarto_target, "--output", $outfile) == 0
+  system(
+    "quarto",
+    "render", "$infile",
+    "--to", $quarto_target,
+    "--output", $outfile,
+    "--lua-filter", "$ENV{HOME}/.pandoc/filters/quarto_docx_embeded_table.lua",
+    "--citeproc",
+    "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua"
+  ) == 0
     or die "Failed to run quarto: $?";
 
   # 进一步处理 quarto render 后的文件
