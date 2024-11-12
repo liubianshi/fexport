@@ -29,6 +29,7 @@ GetOptions('to|t=s'      => \my $OUTFORMAT,
            'verbose|v'   => \my $VERBOSE,
            'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
            'keep|k'      => \my $KEEP_INTERMEDIATES,
+           'preview'     => \my $PREVIEW,
            'help|h'      => \my $HELP);
 if ($HELP) { help(); exit 0 }
 my @files_needed_clean = ();
@@ -322,12 +323,12 @@ sub str_adj_word_documents {
         }iegmx;
 
         # 替换交叉引用时引入的空格问题
-        s{
-            ((?<!$tag_ascii)|\s) \s* \( \s* (?<after>[^<)]{3,}) \) \s*
-        }{
-            "（" . $+{after} . "）"
-        }iegmx;
-        s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
+        # s{
+        #     ((?<!$tag_ascii)|\s) \s* \( \s* (?<after>[^<)]{3,}) \) \s*
+        # }{
+        #     "（" . $+{after} . "）"
+        # }iegmx;
+        # s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
 
         # 解决 pandoc-crossref 和 flextable 的兼容问题
         # 通过 lua-filter, pandoc-crossref 可以为 flextable 表格编号
@@ -501,7 +502,6 @@ sub load_pandoc_defaults {
   return $yaml;
 }
 
-
 # 处理 quarto 文件 ------------------------------------------------------ {{{2
 sub render_qmd {
   my ($infile, $outformat, $outfile) = @_;
@@ -542,6 +542,9 @@ sub render_qmd {
   }
   DumpFile("_metadata.yml", $meta_data) and $metadata_generated = 1;
 
+  if ($PREVIEW) {
+    exec "quarto", "preview", $infile;
+  }
   # 使用 quarto render 文件
   system(
     "quarto",
