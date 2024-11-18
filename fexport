@@ -59,7 +59,7 @@ if (File::Spec->file_name_is_absolute($OUTFILE)) {
 my $PANDOC_RUN          = 0;
 my $PANDOC_CMD          = "pandoc +RTS -M512M -RTS";
 my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_uris";
-my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown");
+my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown", "qmd", "quarto");
 my @PANDOC_FILTERS      = ('--filter=pandoc-crossref',
                            '--lua-filter=rm-test-table-line.lua',
                            '--citeproc',
@@ -92,7 +92,7 @@ elsif ($FROM eq "rmd") {
         $PANDOC_RUN = 1;
     }
 }
-elsif ($FROM eq "qmd") {
+elsif ($FROM eq "qmd" or $FROM eq "quarto") {
   render_qmd($INFILE, $OUTFORMAT, $OUTFILE);
   exit 0;
 }
@@ -213,8 +213,8 @@ sub str_adj_file {
 sub str_adj_html {
     my $cjk = qr/[^A-Za-z,."'';。；，：“”（）、？《》]/;
     for (@{shift()}) {
-        s/([^A-Za-z,."';])\s(<span class="citation" data\-cites="[^\w])/$1$2/g;
-        s/($cjk)(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/$1 $2/g;
+      s/([^A-Za-z,."';])\s(<span class="citation" data\-cites="[^\w])/$1$2/g;
+      s/($cjk)(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/$1 $2/g;
     }
 }
 
@@ -523,7 +523,7 @@ sub render_qmd {
     move "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
   };
   if (-e "_metadata.yml") {
-    copy "_metadata.yml" => "_metadata.yml_bck" and $metadata_exist = 1;
+    move "_metadata.yml" => "_metadata.yml_bck" and $metadata_exist = 1;
   }
 
   # 处理元数据，载入 pandoc 的默认配置文件，并整合 quarto 的 _metadata.yml 文件
@@ -540,9 +540,6 @@ sub render_qmd {
   }
   DumpFile("_metadata.yml", $meta_data) and $metadata_generated = 1;
 
-  if ($PREVIEW) {
-    exec "quarto", "preview", $infile;
-  }
   # 使用 quarto render 文件
   system(
     "quarto",
@@ -550,7 +547,6 @@ sub render_qmd {
     "--to", $quarto_target,
     "--output", $outfile,
     "--lua-filter", "$ENV{HOME}/.pandoc/filters/quarto_docx_embeded_table.lua",
-    "--citeproc",
     "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua"
   ) == 0
     or die "Failed to run quarto: $?";
@@ -562,7 +558,26 @@ sub render_qmd {
     close $read_content;
     str_adj_etal(\@html_contents);
     str_adj_html(\@html_contents);
+    if ($PREVIEW) {
+      for (@html_contents) {
+        last if s/^(\s*<title>).+(<\/title>)\s*$/${1}quarto_preview_in_browser${2}/;
+      }
+    }
     write2file(\@html_contents, $OUTFILE);
+    if ($PREVIEW) {
+      my $current_win_id = qx/xdotool getactivewindow/;
+      chomp($current_win_id);
+      my $surf_window_id = qx(xdotool search --onlyvisible --name quarto_preview_in_browser | head -n 1);
+      chomp($surf_window_id);
+      if (not defined $surf_window_id or $surf_window_id eq "") {
+        exec qq(setsid surf "$OUTFILE" &>/dev/null);
+      }
+
+      exec qq(
+        xdotool windowactivate --sync  $surf_window_id key --clearmodifiers ctrl+r && \\
+        xdotool windowactivate $current_win_id
+      )
+    }
   }
   elsif ($outformat eq "pdf") {
     open my $read_content, "<", $outfile
@@ -587,9 +602,8 @@ sub render_qmd {
     say $target_file;
   }
   elsif ($outformat eq "docx") {
-    str_adj_word($outfile);
+    # str_adj_word($outfile);
   }
 }
-
 
 
