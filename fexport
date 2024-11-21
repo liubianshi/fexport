@@ -304,50 +304,53 @@ sub str_adj_word_documents {
     my $start = q{<w:r><w:t xml:space="preserve">};
     my $end   = q{</w:t></w:r>};
     for (@{$content_ref}) {
-        s/$tag_start \s+ $tag_end ($tag_start $digits_sign)/$1/gimx;
-        # Convert English brackets after Chinese characters into Chinese brackets
-        s{ (?<!$tag_ascii) (?<before>\s* $tag_end \s*)
-            (?:$tag_space \s*)* \s*
-            $tag_par_l (?<after>.*?) $tag_par_r
-        }{ $+{before}
-            . $start . "（" . $end
-            . $+{after}
-            . $start . "）" . $end
-        }eimxg;
-        s{
-            (?<!$tag_ascii|\s) \s* \( \s* (?<after>.*?) $tag_par_r
-        }{
-            "（" . $+{after} . $start . "）" . $end
-        }iegmx;
+      # 比如 ab (2020, => ab(2020,
+      s/$tag_start \s+ $tag_end ($tag_start $digits_sign)/$1/gimx;
 
-        # 替换交叉引用时引入的空格问题
-        # s{
-        #     ((?<!$tag_ascii)|\s) \s* \( \s* (?<after>[^<)]{3,}) \) \s*
-        # }{
-        #     "（" . $+{after} . "）"
-        # }iegmx;
-        # s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
+      # Convert English brackets after Chinese characters into Chinese brackets
+      # 小明 (xxxx) => 小明（xxxx）
+      s{ (?<!$tag_ascii) (?<before>\s* $tag_end \s*)
+          (?:$tag_space \s*)* \s*
+          $tag_par_l (?<after>.*?) $tag_par_r
+      }{ $+{before}
+          . $start . "（" . $end
+          . $+{after}
+          . $start . "）" . $end
+      }eimxg;
+      s{
+          (?<!$tag_ascii|\s) \s* \( \s* (?<after>.*?) $tag_par_r
+      }{
+          "（" . $+{after} . $start . "）" . $end
+      }iegmx;
+      s{
+          (?<!$tag_ascii|\s) \s* \( \s* (?<after>[^<)]{3,}) \s* \) \s*
+      }{
+          "（" . $+{after} . "）"
+      }iegmx;
 
-        # 解决 pandoc-crossref 和 flextable 的兼容问题
-        # 通过 lua-filter, pandoc-crossref 可以为 flextable 表格编号
-        # 单表格标题会变成普通文本，
-        # 我不知道如何在 pandoc 层面解决这个问题
-        # 因此，只能采取正则匹配的笨办法
-        s{($bookmarkStart \s+ $pStart \s+ $pPrStart \s+)
-            <w:pStyle \s+ w:val="BodyText"/>
-            (\s* $pPrEnd \s* $tag_start \s* $tblPrefix)
-        }{$1<w:pStyle w:val="TableCaption"/>$2}gimx;
+      # 替换交叉引用时引入的空格问题
+      s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
 
-        # 删除中文标点符号后的空格
-        my $tag_chinese_punc = qr/[（）。，：、]/u;
-        s{ \s* ($tag_chinese_punc) \s* ($tag_end) \s* $tag_space }{$1$2}gimux;
+      # 解决 pandoc-crossref 和 flextable 的兼容问题
+      # 通过 lua-filter, pandoc-crossref 可以为 flextable 表格编号
+      # 单表格标题会变成普通文本，
+      # 我不知道如何在 pandoc 层面解决这个问题
+      # 因此，只能采取正则匹配的笨办法
+      s{($bookmarkStart \s+ $pStart \s+ $pPrStart \s+)
+          <w:pStyle \s+ w:val="BodyText"/>
+          (\s* $pPrEnd \s* $tag_start \s* $tblPrefix)
+      }{$1<w:pStyle w:val="TableCaption"/>$2}gimx;
 
-        # 直角引号处理
-        my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
-        my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
-        my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
-        s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
-        s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
+      # 删除中文标点符号后的空格
+      my $tag_chinese_punc = qr/[（）。，：、]/u;
+      s{ \s* ($tag_chinese_punc) \s* ($tag_end) \s* $tag_space }{$1$2}gimux;
+
+      # 直角引号处理
+      my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
+      my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
+      my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
+      s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
+      s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
     }
     return $content_ref;
 }
