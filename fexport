@@ -186,10 +186,12 @@ sub pandoc_opts_default {
 
 # 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------- {{{2
 sub str_adj_etal {
-    for (@{shift()}) {
-        s{ (?<=[a-zA-Z]) (,\s|\s) 等                 }{$1et al.}mxg;
-        s{ \s (等 (?:\s\( | ,\s  | <\/a> | <\/w:t>)) }{$1}gx;
-    }
+  my $content_ref = shift or return;
+  my $tag_start     = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
+  for (@{$content_ref}) {
+    s{ (?<=[a-zA-Z]) (,\s|\s) 等                  }{$1et al.}mxg;
+    s{ \s (等 (?: \s\( | （ | ,\s  | <\/a> | <\/w:t>)) }{$1}gx;
+  }
 }
 
 # 替代文件内容 ---------------------------------------------------------- {{{2
@@ -605,7 +607,7 @@ sub render_qmd {
     say $target_file;
   }
   elsif ($outformat eq "docx") {
-    # str_adj_word($outfile);
+    str_adj_word($outfile);
   }
 }
 
