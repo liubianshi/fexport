@@ -283,6 +283,17 @@ sub str_adj_word_documents {
     my $content_ref = str_group_by_paragraph($ori_content_ref, "docx");
     str_adj_etal($content_ref);
 
+    my $nobreak_space = qr/ /u;
+
+    # 公式没有上标，但有上标占位符的情况
+    my $math_sup      = qr/
+      <m:sup> \s*
+        <m:r> \s*
+          <m:t>(?:\s|​|$nobreak_space)*<\/m:t> \s*
+        <\/m:r> \s*
+      <\/m:sup>
+    /imx;
+
     my $tag_start     = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
     my $tag_start_s   = qr/ <w:r> \s* <w:t>                         /imx;
     my $tag_end       = qr/ <\/w:t> \s* <\/w:r>                     /imx;
@@ -291,7 +302,6 @@ sub str_adj_word_documents {
     my $tag_par_r     = qr/ $tag_start \s* \) \s* $tag_end          /imx;
     my $tag_ascii     = qr/ [A-z0-9_,;.\-()?:]                      /imx;
     my $digits_sign   = qr/ [^\(]+ \(\d{4},                         /imx;
-    my $nobreak_space = qr/ /u;
     my $table_ref     = qr/表$nobreak_space\d+/u;
     my $figure_ref    = qr/图$nobreak_space\d+/u;
     my $equation_ref  = qr/公式$nobreak_space\(\d+\)/u;
@@ -309,6 +319,8 @@ sub str_adj_word_documents {
       # 比如 ab (2020, => ab(2020,
       s/$tag_start \s+ $tag_end ($tag_start $digits_sign)/$1/gimx;
 
+      # \sum 上标
+      s/$math_sup//gimx;
       # Convert English brackets after Chinese characters into Chinese brackets
       # 小明 (xxxx) => 小明（xxxx）
       s{ (?<!$tag_ascii) (?<before>\s* $tag_end \s*)
@@ -555,6 +567,11 @@ sub render_qmd {
     "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua"
   ) == 0
     or die "Failed to run quarto: $?";
+
+  # 在正常运行的情况下，提前清理临时文件
+  unlink "_metadata.yml" if $metadata_generated;
+  move "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
+  $guard->dismiss();
 
   # 进一步处理 quarto render 后的文件
   if ($outformat eq "html") {
