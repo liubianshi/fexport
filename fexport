@@ -30,6 +30,7 @@ GetOptions('to|t=s'      => \my $OUTFORMAT,
            'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
            'keep|k'      => \my $KEEP_INTERMEDIATES,
            'preview'     => \my $PREVIEW,
+           'lang'        => \my $LANG,
            'help|h'      => \my $HELP);
 if ($HELP) { help(); exit 0 }
 my @files_needed_clean = ();
@@ -55,6 +56,7 @@ if (File::Spec->file_name_is_absolute($OUTFILE)) {
     $OUTFILE = File::Spec->abs2rel($OUTFILE, getcwd())
 }
 ($FROM, $OUTFORMAT) = map {lc} $FROM, $OUTFORMAT;
+$LANG //= "zh";
 
 my $PANDOC_RUN          = 0;
 my $PANDOC_CMD          = "pandoc +RTS -M512M -RTS";
@@ -557,6 +559,10 @@ sub render_qmd {
   }
   DumpFile("_metadata.yml", $meta_data) and $metadata_generated = 1;
 
+  if ($meta_data->{lang}) {
+    $LANG = $meta_data->{lang};
+  }
+
   # 使用 quarto render 文件
   system(
     "quarto",
@@ -624,7 +630,7 @@ sub render_qmd {
     say $target_file;
   }
   elsif ($outformat eq "docx") {
-    str_adj_word($outfile);
+    str_adj_word($outfile) if $LANG eq "zh";
   }
 }
 
