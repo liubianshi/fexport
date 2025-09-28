@@ -7,190 +7,192 @@ use strict;
 use File::Basename;
 use File::Spec;
 use Getopt::Long;
-use List::Util qw/any/;
-use File::Copy qw(copy move);
+use List::Util   qw/any/;
+use File::Copy   qw(copy move);
 use Scope::Guard qw(guard);
 use warnings;
 use File::Temp qw/tempfile tempdir/;
-use Cwd qw(getcwd abs_path);
-use feature qw( switch );
-use YAML qw(LoadFile DumpFile Dump);
+use Cwd        qw(getcwd abs_path);
+use feature    qw( switch );
+use YAML       qw(LoadFile DumpFile Dump);
 no warnings qw( experimental::smartmatch );
-use FindBin qw($RealBin);
+use FindBin    qw($RealBin);
 use File::Copy qw(cp);
-use Fatal qw(open close);
+use Fatal      qw(open close);
 
 # parse parameters ====================================================== {{{1
-Getopt::Long::Configure ("bundling");
-GetOptions('to|t=s'      => \my $OUTFORMAT,
-           'from|f=s'    => \my $FROM,
-           'outfile|o=s' => \my $OUTFILE,
-           'dirname|d=s' => \my $DIRNAME,
-           'verbose|v'   => \my $VERBOSE,
-           'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
-           'keep|k'      => \my $KEEP_INTERMEDIATES,
-           'preview'     => \my $PREVIEW,
-           'lang'        => \my $LANG,
-           'help|h'      => \my $HELP);
+Getopt::Long::Configure("bundling");
+GetOptions(
+  'to|t=s'      => \my $OUTFORMAT,
+  'from|f=s'    => \my $FROM,
+  'outfile|o=s' => \my $OUTFILE,
+  'dirname|d=s' => \my $DIRNAME,
+  'verbose|v'   => \my $VERBOSE,
+  'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
+  'keep|k'      => \my $KEEP_INTERMEDIATES,
+  'preview'     => \my $PREVIEW,
+  'lang'        => \my $LANG,
+  'help|h'      => \my $HELP
+);
 if ($HELP) { help(); exit 0 }
 my @files_needed_clean = ();
-local %SIG = (%SIG, INT  => \&clean_temp_file, TERM => \&clean_temp_file);
-my ($LOG_FH, $LOG_FILE) = tempfile();
+local %SIG = ( %SIG, INT => \&clean_temp_file, TERM => \&clean_temp_file );
+my ( $LOG_FH, $LOG_FILE ) = tempfile();
+
 sub clean_temp_file {
-    close $LOG_FH;
-    unlink $LOG_FILE;
-    unlink $_ for @files_needed_clean;
+  close $LOG_FH;
+  unlink $LOG_FILE;
+  unlink $_ for @files_needed_clean;
 }
 my $current_pwd = getcwd();
-my $INFILE = $ARGV[0];
-if (defined $INFILE and File::Spec->file_name_is_absolute($INFILE)) {
-    $DIRNAME //= dirname($INFILE);
-    $INFILE = File::Spec->abs2rel($INFILE, $DIRNAME);
+my $INFILE      = $ARGV[0];
+if ( defined $INFILE and File::Spec->file_name_is_absolute($INFILE) ) {
+  $DIRNAME //= dirname($INFILE);
+  $INFILE = File::Spec->abs2rel( $INFILE, $DIRNAME );
 }
 chdir $DIRNAME if defined $DIRNAME;
 
-$FROM      //= $INFILE  =~ m/\.(\w+)$/  ?  $1  :  "md";
-$OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/  ?  $1  :  "html";
+$FROM      //= $INFILE  =~ m/\.(\w+)$/ ? $1 : "md";
+$OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/ ? $1 : "html";
 $OUTFILE   //= $INFILE  =~ s/\.\w+$/.$OUTFORMAT/r;
-if (File::Spec->file_name_is_absolute($OUTFILE)) {
-    $OUTFILE = File::Spec->abs2rel($OUTFILE, getcwd())
+if ( File::Spec->file_name_is_absolute($OUTFILE) ) {
+  $OUTFILE = File::Spec->abs2rel( $OUTFILE, getcwd() );
 }
-($FROM, $OUTFORMAT) = map {lc} $FROM, $OUTFORMAT;
+( $FROM, $OUTFORMAT ) = map { lc } $FROM, $OUTFORMAT;
 $LANG //= "zh";
 
 my $PANDOC_RUN          = 0;
 my $PANDOC_CMD          = "pandoc +RTS -M512M -RTS";
 my $PANDOC_MARKDOWN     = "markdown+emoji+east_asian_line_breaks+autolink_bare_uris";
-my @PANDOC_MARKDOWN_EXT = ("md", "markdown", "rmd", "rmarkdown", "qmd", "quarto");
-my @PANDOC_FILTERS      = ('--filter=pandoc-crossref',
-                           '--lua-filter=rm-test-table-line.lua',
-                           '--citeproc',
-                           '--lua-filter=rsbc.lua');
-my @PANDOC              = ($PANDOC_CMD,
-                           '--from="' . (
-                               any {$_ eq $FROM} @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM) . '"',
-                           $VERBOSE ? '--verbose' : "",
-                           @PANDOC_FILTERS,
-                           $PANDOC_OPTS_USER // "");
+my @PANDOC_MARKDOWN_EXT = ( "md", "markdown", "rmd", "rmarkdown", "qmd", "quarto" );
+my @PANDOC_FILTERS =
+  ( '--filter=pandoc-crossref', '--lua-filter=rm-test-table-line.lua', '--citeproc', '--lua-filter=rsbc.lua' );
+my @PANDOC = (
+  $PANDOC_CMD,
+  '--from="' . ( any { $_ eq $FROM } @PANDOC_MARKDOWN_EXT ? $PANDOC_MARKDOWN : $FROM ) . '"',
+  $VERBOSE ? '--verbose' : "",
+  @PANDOC_FILTERS, $PANDOC_OPTS_USER // ""
+);
 
 # parse input_file ====================================================== {{{1
 my @MD_CONTENTS;
-if ($FROM eq "md") {
-    push @MD_CONTENTS, $_ while (<>);
+if ( $FROM eq "md" ) {
+  push @MD_CONTENTS, $_ while (<>);
 }
-elsif ($FROM eq "rmd") {
-    my ($tpfh, $tpfile) = tempfile(suffix => '.rmd');
-    unless (defined $INFILE) {
-        print $tpfh $_ while (<>);
-        close $tpfh;
-    }
-    my %rmdopt = knit_rmd2($INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE);
-    $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
-    if ($rmdopt{run_pandoc} eq "no") {
-        $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
-    }
-    else {
-        copy $rmdopt{outfile} => $OUTFILE unless $OUTFILE eq $rmdopt{outfile};
-        $PANDOC_RUN = 1;
-    }
+elsif ( $FROM eq "rmd" ) {
+  my ( $tpfh, $tpfile ) = tempfile( suffix => '.rmd' );
+  unless ( defined $INFILE ) {
+    print $tpfh $_ while (<>);
+    close $tpfh;
+  }
+  my %rmdopt = knit_rmd2( $INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE );
+  $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
+  if ( $rmdopt{run_pandoc} eq "no" ) {
+    $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
+  }
+  else {
+    copy $rmdopt{outfile} => $OUTFILE unless $OUTFILE eq $rmdopt{outfile};
+    $PANDOC_RUN = 1;
+  }
 }
-elsif ($FROM eq "qmd" or $FROM eq "quarto") {
-  render_qmd($INFILE, $OUTFORMAT, $OUTFILE);
+elsif ( $FROM eq "qmd" or $FROM eq "quarto" ) {
+  render_qmd( $INFILE, $OUTFORMAT, $OUTFILE );
   exit 0;
 }
 else {
-    die "$FROM wasn't supported yet!"
+  die "$FROM wasn't supported yet!";
 }
 
 # transform markdown contest to target format =========================== {{{1
-if ($OUTFORMAT eq "html") {
+if ( $OUTFORMAT eq "html" ) {
   push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=html", "--output=\"$OUTFILE\"";
   my @html_contents = ();
-  md2array(\@MD_CONTENTS, \@html_contents, \@PANDOC);
-  str_adj_etal(\@html_contents);
-  str_adj_html(\@html_contents);
-  write2file(\@html_contents, $OUTFILE);
+  md2array( \@MD_CONTENTS, \@html_contents, \@PANDOC );
+  str_adj_etal( \@html_contents );
+  str_adj_html( \@html_contents );
+  write2file( \@html_contents, $OUTFILE );
 }
-elsif ( $OUTFORMAT eq "docx") {
+elsif ( $OUTFORMAT eq "docx" ) {
   unless ($PANDOC_RUN) {
     push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=docx", "--output=\"$OUTFILE\"";
-    md2file(\@MD_CONTENTS, \@PANDOC);
+    md2file( \@MD_CONTENTS, \@PANDOC );
   }
   str_adj_word($OUTFILE);
 }
-elsif ($OUTFORMAT eq "pdf") {
-        my @tex_contents = ();
-        my $dir = tempdir(CLEANUP => 1);
-        my $intermediate = File::Spec->catfile($dir, "intermediate.tex");
-        $OUTFILE =~ s/pdf$/tex/;
-        push @PANDOC, pandoc_opts_default("tex"), "--output=\"$OUTFILE\"", "--to=latex";
+elsif ( $OUTFORMAT eq "pdf" ) {
+  my @tex_contents = ();
+  my $dir          = tempdir( CLEANUP => 1 );
+  my $intermediate = File::Spec->catfile( $dir, "intermediate.tex" );
+  $OUTFILE =~ s/pdf$/tex/;
+  push @PANDOC, pandoc_opts_default("tex"), "--output=\"$OUTFILE\"", "--to=latex";
 
-        str_adj_md_contents_for_tex(\@MD_CONTENTS);
-        md2array(\@MD_CONTENTS, \@tex_contents, \@PANDOC);
-        str_adj_tex(\@tex_contents);
-        write2file(\@tex_contents, $intermediate);
-        $OUTFILE =~ s/tex$/pdf/;
-        my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
-                             : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
-        system(qq{ $pdfmk && mv $dir/intermediate.pdf "$OUTFILE" });
+  str_adj_md_contents_for_tex( \@MD_CONTENTS );
+  md2array( \@MD_CONTENTS, \@tex_contents, \@PANDOC );
+  str_adj_tex( \@tex_contents );
+  write2file( \@tex_contents, $intermediate );
+  $OUTFILE =~ s/tex$/pdf/;
+  my $pdfmk =
+    $VERBOSE
+    ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
+    : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
+  system(qq{ $pdfmk && mv $dir/intermediate.pdf "$OUTFILE" });
 }
 else {
-        push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=\"$OUTFILE\"";
-        md2file(\@MD_CONTENTS, \@PANDOC);
+  push @PANDOC, pandoc_opts_default($OUTFORMAT), "--to=$OUTFORMAT", "--output=\"$OUTFILE\"";
+  md2file( \@MD_CONTENTS, \@PANDOC );
 }
-
 
 if ($VERBOSE) {
-    print $_ while (<$LOG_FH>);
+  print $_ while (<$LOG_FH>);
 }
 say "\n";
-if ($current_pwd eq getcwd()) { say "$OUTFILE" }
-else                          { say abs_path($OUTFILE) }
+if   ( $current_pwd eq getcwd() ) { say "$OUTFILE" }
+else                              { say abs_path($OUTFILE) }
 clean_temp_file();
 exit 0;
-
 
 # function needed to used =============================================== {{{1
 # transform md content in array to target format in array --------------------- {{{2
 sub md2array {
-    my ($in_contents, $out_contents, $pandoc) = @_;
-    md2file($in_contents, $pandoc);
-    open my $read_content, "<", $OUTFILE
-        or die "cannot open file $OUTFILE: $!";
-    @{$out_contents} = <$read_content>;
-    close $read_content;
+  my ( $in_contents, $out_contents, $pandoc ) = @_;
+  md2file( $in_contents, $pandoc );
+  open my $read_content, "<", $OUTFILE
+    or die "cannot open file $OUTFILE: $!";
+  @{$out_contents} = <$read_content>;
+  close $read_content;
 }
 
 # transform md contests in array to target file ------------------------- {{{2
 sub md2file {
-    my ($in_contents, $pandoc) = @_;
-    say {$LOG_FH} join " ", @{$pandoc};
-    open my $pandoc_fh, "|-", join(" ", @{$pandoc})
-        or die "cannot run pandoc: $!\n";
-    print {$pandoc_fh} join "", @{$in_contents};
-    close $pandoc_fh
+  my ( $in_contents, $pandoc ) = @_;
+  say {$LOG_FH} join " ", @{$pandoc};
+  open my $pandoc_fh, "|-", join( " ", @{$pandoc} )
+    or die "cannot run pandoc: $!\n";
+  print {$pandoc_fh} join "", @{$in_contents};
+
+  # close $pandoc_fh
 }
 
 # pandoc default options ------------------------------------------------ {{{2
 sub pandoc_opts_default {
-    my $to = shift;
-    my ($datadir, $defaults, $defaultfile);
-    $datadir = qx[pandoc --version | grep -E '^User data'];
-    $datadir =~ s/^.*\s*User data directory:\s*([^\s]+)\n/$1/;
-    $defaultfile = File::Spec->catfile($datadir, "defaults", "2$to.yaml");
-    $defaults = "-d2$to" if -f $defaultfile;
-    if (qx/uname/ =~ m/^Darwin/) {
-        $defaultfile  = File::Spec->catfile($datadir, "defaults", "2${to}_mac.yaml");
-        $defaults = "-d2${to}_mac" if -f $defaultfile;
-    }
-    return($defaults // "");
+  my $to = shift;
+  my ( $datadir, $defaults, $defaultfile );
+  $datadir = qx[pandoc --version | grep -E '^User data'];
+  $datadir =~ s/^.*\s*User data directory:\s*([^\s]+)\n/$1/;
+  $defaultfile = File::Spec->catfile( $datadir, "defaults", "2$to.yaml" );
+  $defaults    = "-d2$to" if -f $defaultfile;
+  if ( qx/uname/ =~ m/^Darwin/ ) {
+    $defaultfile = File::Spec->catfile( $datadir, "defaults", "2${to}_mac.yaml" );
+    $defaults    = "-d2${to}_mac" if -f $defaultfile;
+  }
+  return ( $defaults // "" );
 }
 
 # 调整参考文献文内引用中 “et al” 的显示格式 ----------------------------- {{{2
 sub str_adj_etal {
   my $content_ref = shift or return;
-  my $tag_start     = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
-  for (@{$content_ref}) {
+  my $tag_start   = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
+  for ( @{$content_ref} ) {
     s{ (?<=[a-zA-Z]) (,\s|\s) 等                  }{$1et al.}mxg;
     s{ \s (等 (?: \s\( | （ | ,\s  | <\/a> | <\/w:t>)) }{$1}gx;
   }
@@ -198,97 +200,97 @@ sub str_adj_etal {
 
 # 替代文件内容 ---------------------------------------------------------- {{{2
 sub str_adj_file {
-    my ($file, $sub) = @_;
+  my ( $file, $sub ) = @_;
 
-    open my $infh, "<", $file
-        or die "Cannot open $file: $!\n";
-    my @contents = <$infh>;
-    chomp(@contents);
-    close $infh;
+  open my $infh, "<", $file
+    or die "Cannot open $file: $!\n";
+  my @contents = <$infh>;
+  chomp(@contents);
+  close $infh;
 
-    my $newcontests_ref = $sub->(\@contents);
-    open my $outfh, ">", $file
-        or die "Cannot open $file: $!";
-    print $outfh join "", @$newcontests_ref;
-    close $outfh;
+  my $newcontests_ref = $sub->( \@contents );
+  open my $outfh, ">", $file
+    or die "Cannot open $file: $!";
+  print $outfh join "", @$newcontests_ref;
+  close $outfh;
 }
 
 # 对于 html 输出格式做特殊的文本替代处理 -------------------------------- {{{2
 sub str_adj_html {
-    my $cjk = qr/[^A-Za-z,."'';。；，：“”（）、？《》]/;
-    for (@{shift()}) {
-      s/([^A-Za-z,."';])\s(<span class="citation" data\-cites="[^\w])/$1$2/g;
-      s/($cjk)(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/$1 $2/g;
-    }
+  my $cjk = qr/[^A-Za-z,."'';。；，：“”（）、？《》]/;
+  for ( @{ shift() } ) {
+    s/([^A-Za-z,."';])\s(<span class="citation" data\-cites="[^\w])/$1$2/g;
+    s/($cjk)(<span class="citation"[^>]+>(<a href=[^>]+>)?[A-Za-z])/$1 $2/g;
+  }
 }
 
 # 对 tex 输出格式做特殊的调整 ------------------------------------------- {{{2
 sub str_adj_md_contents_for_tex {
-    my $content_ref = shift;
-    my $math_sign = qr/\$\$/;
-    my $eq_begin = qr/\\begin\{equa[^\}]+\}/;
-    my $eq_end = qr/\\end\{equa[^\}]+\}/;
+  my $content_ref = shift;
+  my $math_sign   = qr/\$\$/;
+  my $eq_begin    = qr/\\begin\{equa[^\}]+\}/;
+  my $eq_end      = qr/\\end\{equa[^\}]+\}/;
 
-    for (@{$content_ref}) {
-        s/$math_sign ($eq_begin)/$1/gx;
-        s/($eq_end) [^\$]* $math_sign/$1/gx;
-    }
+  for ( @{$content_ref} ) {
+    s/$math_sign ($eq_begin)/$1/gx;
+    s/($eq_end) [^\$]* $math_sign/$1/gx;
+  }
 }
 
 sub str_adj_tex {
-    my $content_ref = shift;
-    my $words = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
-    my $quote_left = qr/\`/;
-    my $quote_right = qr/\'/;
+  my $content_ref = shift;
+  my $words       = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
+  my $quote_left  = qr/\`/;
+  my $quote_right = qr/\'/;
 
-    my $pre_line;
-    my @table_label;
-    for (@{$content_ref}) {
-        s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx;
-        s/$quote_left    ($words) $quote_right   /‘$1’/gx;
-        s/\s+((?:表|图|公式)\~\\ref\{\w+\:\w+\})/$1/gx;
-        if (m/^\\label\{(tbl\:[^}]+)\}/) {
-            if ($pre_line =~ m/^\\hypertarget\{$1\}/) {
-                chomp($_);
-                push @table_label, '\\caption{' . $_ . "}\\tabularnewline\n";
-                $_ = "";
-            }
-        }
-        if (m/^\\begin\{\w+table\}/) {
-            $_ .= (pop @table_label) // "";
-        }
-        $pre_line = $_;
+  my $pre_line;
+  my @table_label;
+  for ( @{$content_ref} ) {
+    s/$quote_left{2} ($words) $quote_right{2}/“$1”/gx;
+    s/$quote_left    ($words) $quote_right   /‘$1’/gx;
+    s/\s+((?:表|图|公式)\~\\ref\{\w+\:\w+\})/$1/gx;
+    if (m/^\\label\{(tbl\:[^}]+)\}/) {
+      if ( $pre_line =~ m/^\\hypertarget\{$1\}/ ) {
+        chomp($_);
+        push @table_label, '\\caption{' . $_ . "}\\tabularnewline\n";
+        $_ = "";
+      }
     }
+    if (m/^\\begin\{\w+table\}/) {
+      $_ .= ( pop @table_label ) // "";
+    }
+    $pre_line = $_;
+  }
 }
 
 # 查找替代 word 文件的部分字符 ------------------------------------------ {{{2
 sub str_adj_word {
-    my $file = shift;
-    my $cwd = getcwd();
-    my $dir = tempdir( CLEANUP => 1 );
-    system(qq/unzip -q "$file" -d "$dir"/);
-    unlink $file;
-    chdir "$dir";
+  my $file = shift;
+  my $cwd  = getcwd();
+  my $dir  = tempdir( CLEANUP => 1 );
+  system(qq/unzip -q "$file" -d "$dir"/);
+  unlink $file;
+  chdir "$dir";
 
-    my $document_name = File::Spec->catfile("word", "document.xml");
-    str_adj_file($document_name, \&str_adj_word_documents);
-    my $footnotes_name = File::Spec->catfile("word", "footnotes.xml");
-    str_adj_file($footnotes_name, \&str_adj_word_footnotes);
+  my $document_name = File::Spec->catfile( "word", "document.xml" );
+  str_adj_file( $document_name, \&str_adj_word_documents );
+  my $footnotes_name = File::Spec->catfile( "word", "footnotes.xml" );
+  str_adj_file( $footnotes_name, \&str_adj_word_footnotes );
 
-    system(qq/zip -r -q "$file" */) == 0 or die "zip error: $!";
-    system("mv", $file, $cwd) if dirname($file) ne $cwd;
-    chdir $cwd;
+  system(qq/zip -r -q "$file" */) == 0 or die "zip error: $!";
+  system( "mv", $file, $cwd ) if dirname($file) ne $cwd;
+  chdir $cwd;
 }
 
 sub str_adj_word_documents {
-    my $ori_content_ref = shift;
-    my $content_ref = str_group_by_paragraph($ori_content_ref, "docx");
-    str_adj_etal($content_ref);
+  my $ori_content_ref = shift;
+  my $content_ref     = str_group_by_paragraph( $ori_content_ref, "docx" );
+  str_adj_etal($content_ref);
 
-    my $nobreak_space = qr/ /u;
+  my $nobreak_space = qr/ /u;
 
-    # 公式没有上标，但有上标占位符的情况
-    my $math_sup      = qr/
+  # 公式没有上标，但有上标占位符的情况
+  my $math_sup = qr/
       <m:sup> \s*
         <m:r> \s*
           <m:t>(?:\s|​|$nobreak_space)*<\/m:t> \s*
@@ -296,36 +298,38 @@ sub str_adj_word_documents {
       <\/m:sup>
     /imx;
 
-    my $tag_start     = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
-    my $tag_start_s   = qr/ <w:r> \s* <w:t>                         /imx;
-    my $tag_end       = qr/ <\/w:t> \s* <\/w:r>                     /imx;
-    my $tag_space     = qr/ $tag_start \s* $tag_end                 /imx;
-    my $tag_par_l     = qr/ $tag_start \s* \( \s* $tag_end          /imx;
-    my $tag_par_r     = qr/ $tag_start \s* \) \s* $tag_end          /imx;
-    my $tag_ascii     = qr/ [A-z0-9_,;.\-()?:]                      /imx;
-    my $digits_sign   = qr/ [^\(]+ \(\d{4},                         /imx;
-    my $table_ref     = qr/表$nobreak_space\d+/u;
-    my $figure_ref    = qr/图$nobreak_space\d+/u;
-    my $equation_ref  = qr/公式$nobreak_space\(\d+\)/u;
+  my $tag_start    = qr/ <w:r> \s* <w:t \s xml:space="preserve"> /imx;
+  my $tag_start_s  = qr/ <w:r> \s* <w:t>                         /imx;
+  my $tag_end      = qr/ <\/w:t> \s* <\/w:r>                     /imx;
+  my $tag_space    = qr/ $tag_start \s* $tag_end                 /imx;
+  my $tag_par_l    = qr/ $tag_start \s* \( \s* $tag_end          /imx;
+  my $tag_par_r    = qr/ $tag_start \s* \) \s* $tag_end          /imx;
+  my $tag_ascii    = qr/ [A-z0-9_,;.\-()?:]                      /imx;
+  my $digits_sign  = qr/ [^\(]+ \(\d{4},                         /imx;
+  my $table_ref    = qr/表$nobreak_space\d+/u;
+  my $figure_ref   = qr/图$nobreak_space\d+/u;
+  my $equation_ref = qr/公式$nobreak_space\(\d+\)/u;
 
-    # for match table caption
-    my $bookmarkStart = qr{w:bookmarkStart \s+ w:id="\d+" \s w:name="[\w:]+"/> }imx;
-    my $pStart    = qr{<w:p>};
-    my $pPrStart  = qr{<w:pPr>};
-    my $pPrEnd    = qr{</w:pPr>};
-    my $tblPrefix = qr/表 \d+:/;
+  # for match table caption
+  my $bookmarkStart = qr{w:bookmarkStart \s+ w:id="\d+" \s w:name="[\w:]+"/> }imx;
+  my $pStart        = qr{<w:p>};
+  my $pPrStart      = qr{<w:pPr>};
+  my $pPrEnd        = qr{</w:pPr>};
+  my $tblPrefix     = qr/表 \d+:/;
 
-    my $start = q{<w:r><w:t xml:space="preserve">};
-    my $end   = q{</w:t></w:r>};
-    for (@{$content_ref}) {
-      # 比如 ab (2020, => ab(2020,
-      s/$tag_start \s+ $tag_end ($tag_start $digits_sign)/$1/gimx;
+  my $start = q{<w:r><w:t xml:space="preserve">};
+  my $end   = q{</w:t></w:r>};
+  for ( @{$content_ref} ) {
 
-      # \sum 上标
-      s/$math_sup//gimx;
-      # Convert English brackets after Chinese characters into Chinese brackets
-      # 小明 (xxxx) => 小明（xxxx）
-      s{ (?<!$tag_ascii) (?<before>\s* $tag_end \s*)
+    # 比如 ab (2020, => ab(2020,
+    s/$tag_start \s+ $tag_end ($tag_start $digits_sign)/$1/gimx;
+
+    # \sum 上标
+    s/$math_sup//gimx;
+
+    # Convert English brackets after Chinese characters into Chinese brackets
+    # 小明 (xxxx) => 小明（xxxx）
+    s{ (?<!$tag_ascii) (?<before>\s* $tag_end \s*)
           (?:$tag_space \s*)* \s*
           $tag_par_l (?<after>.*?) $tag_par_r
       }{ $+{before}
@@ -333,153 +337,160 @@ sub str_adj_word_documents {
           . $+{after}
           . $start . "）" . $end
       }eimxg;
-      s{
+    s{
           (?<!$tag_ascii|\s) \s* \( \s* (?<after>.*?) $tag_par_r
       }{
           "（" . $+{after} . $start . "）" . $end
       }iegmx;
-      s{
+    s{
           (?<!$tag_ascii|\s) \s* \( \s* (?<after>[^<)]{3,}) \s* \) \s*
       }{
           "（" . $+{after} . "）"
       }iegmx;
 
-      # 替换交叉引用时引入的空格问题
-      s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
+    # 替换交叉引用时引入的空格问题
+    s{\s+($table_ref|$figure_ref|$equation_ref)}{$1}iugm;
 
-      # 解决 pandoc-crossref 和 flextable 的兼容问题
-      # 通过 lua-filter, pandoc-crossref 可以为 flextable 表格编号
-      # 单表格标题会变成普通文本，
-      # 我不知道如何在 pandoc 层面解决这个问题
-      # 因此，只能采取正则匹配的笨办法
-      s{($bookmarkStart \s+ $pStart \s+ $pPrStart \s+)
+    # 解决 pandoc-crossref 和 flextable 的兼容问题
+    # 通过 lua-filter, pandoc-crossref 可以为 flextable 表格编号
+    # 单表格标题会变成普通文本，
+    # 我不知道如何在 pandoc 层面解决这个问题
+    # 因此，只能采取正则匹配的笨办法
+    s{($bookmarkStart \s+ $pStart \s+ $pPrStart \s+)
           <w:pStyle \s+ w:val="BodyText"/>
           (\s* $pPrEnd \s* $tag_start \s* $tblPrefix)
       }{$1<w:pStyle w:val="TableCaption"/>$2}gimx;
 
-      # 删除中文标点符号后的空格
-      my $tag_chinese_punc = qr/[（）。，：、]/u;
-      s{ \s* ($tag_chinese_punc) \s* ($tag_end) \s* $tag_space }{$1$2}gimux;
+    # 删除中文标点符号后的空格
+    my $tag_chinese_punc = qr/[（）。，：、]/u;
+    s{ \s* ($tag_chinese_punc) \s* ($tag_end) \s* $tag_space }{$1$2}gimux;
 
-      # 直角引号处理
-      my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
-      my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
-      my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
-      s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
-      s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
-    }
-    return $content_ref;
+    # 直角引号处理
+    my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
+    my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
+    my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
+    s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
+    s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
+  }
+  return $content_ref;
 }
 
 sub str_group_by_paragraph {
-    my ($content_ref, $ext) = @_;
-    my %regex_paragraph_end_symbol = (
-        docx => qr{\<\/w\:p\>},
-        md   => qr{\A\s*\z},
-    );
-    my $end_symbol = $regex_paragraph_end_symbol{$ext};
-    my @contents = @$content_ref;
-    for (@contents) {
-        s{($end_symbol)}{\n$1\n}gimx unless "\n" =~ m/$end_symbol/;
-        s{\n\s*\n}{\n}mxg;
-    }
+  my ( $content_ref, $ext ) = @_;
+  my %regex_paragraph_end_symbol = (
+    docx => qr{\<\/w\:p\>},
+    md   => qr{\A\s*\z},
+  );
+  my $end_symbol = $regex_paragraph_end_symbol{$ext};
+  my @contents   = @$content_ref;
+  for (@contents) {
+    s{($end_symbol)}{\n$1\n}gimx unless "\n" =~ m/$end_symbol/;
+    s{\n\s*\n}{\n}mxg;
+  }
 
-    my @contents_by_par;
-    my $par = "";
-    for my $l (@contents) {
-        $par .= $l;
-        if ($l =~ m{$end_symbol}) {
-            push @contents_by_par, $par;
-            $par = "";
-        }
+  my @contents_by_par;
+  my $par = "";
+  for my $l (@contents) {
+    $par .= $l;
+    if ( $l =~ m{$end_symbol} ) {
+      push @contents_by_par, $par;
+      $par = "";
     }
-    push @contents_by_par, $par unless $par eq "";
-    return \@contents_by_par;
+  }
+  push @contents_by_par, $par unless $par eq "";
+  return \@contents_by_par;
 }
 
 sub str_adj_word_footnotes {
-    my $ori_content_ref = shift;
-    my $content_ref = str_group_by_paragraph($ori_content_ref, "docx");
-    str_adj_etal($content_ref);
-    for (@$content_ref) {
-        # 直角引号处理
-        my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
-        my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
-        my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
-        s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
-        s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
-    }
-    return $content_ref;
+  my $ori_content_ref = shift;
+  my $content_ref     = str_group_by_paragraph( $ori_content_ref, "docx" );
+  str_adj_etal($content_ref);
+  for (@$content_ref) {
+
+    # 直角引号处理
+    my $chinese_font_marker = qq{<w:rPr><w:rFonts w:hint="eastAsia"/><w:lang w:eastAsia="zh-CN"/> </w:rPr>};
+    my $chinese_quote_left  = qq{<w:r>$chinese_font_marker<w:t>“</w:t></w:r>};
+    my $chinese_quote_right = qq{<w:r>$chinese_font_marker<w:t>”</w:t></w:r>};
+    s{「}{'</w:t></w:r>' . $chinese_quote_left  . '<w:r><w:t>'}ieug;
+    s{」}{'</w:t></w:r>' . $chinese_quote_right . '<w:r><w:t>'}ieug;
+  }
+  return $content_ref;
 }
 
 # 将数组中的内容写入指定文件 -------------------------------------------- {{{2
 sub write2file {
-    my ($content, $outfile) = @_;
-    open my $fh, ">", $outfile or die "cannot open $outfile: $!";
-    print $fh $_ for (@{$content});
-    close $fh;
+  my ( $content, $outfile ) = @_;
+  open my $fh, ">", $outfile or die "cannot open $outfile: $!";
+  print $fh $_ for ( @{$content} );
+  close $fh;
 }
 
 # 将 Rmarkdown 文件转化成 Markdown -------------------------------------- {{{2
 sub knit_rmd2 {
-    my ($infile, $to, $md_contents_ref, $pandoc_opt_ref, $logfile) = @_;
-    # $infile, 待转换的原文件
-    # $to，转换的目标格式
-    # $md_contest, markdown 文件的内容，列表引用格式
-    # $pandoc_options, pandoc 选项，列表引用格式
+  my ( $infile, $to, $md_contents_ref, $pandoc_opt_ref, $logfile ) = @_;
 
-    my $rscript_path = File::Spec->catfile($RealBin, "parse_rmd.R");
-    my $rmd_opt_path = File::Spec->catfile($RealBin, "rmd_option.yaml");
-    my ($result_fh, $result) = tempfile();
-    close $result_fh;
+  # $infile, 待转换的原文件
+  # $to，转换的目标格式
+  # $md_contest, markdown 文件的内容，列表引用格式
+  # $pandoc_options, pandoc 选项，列表引用格式
 
-    if (system(qq{$rscript_path $to "$infile" "$rmd_opt_path" "$result"}) != 0) {
-        unlink $result;
-        die "Failed to parse $infile: $?"
-    };
-    my %rmd = %{LoadFile($result)};
+  my $rscript_path = File::Spec->catfile( $RealBin, "parse_rmd.R" );
+  my $rmd_opt_path = File::Spec->catfile( $RealBin, "rmd_option.yaml" );
+  my ( $result_fh, $result ) = tempfile();
+  close $result_fh;
+
+  if ( system(qq{$rscript_path $to "$infile" "$rmd_opt_path" "$result"}) != 0 ) {
     unlink $result;
+    die "Failed to parse $infile: $?";
+  }
+  my %rmd = %{ LoadFile($result) };
+  unlink $result;
 
-    if (defined $rmd{knit_meta} and -f $rmd{knit_meta}) {
-        push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
+  if ( defined $rmd{knit_meta} and -f $rmd{knit_meta} ) {
+    push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
+  }
+
+  say $rmd{outfile};
+  if ( $rmd{run_pandoc} eq 'no' ) {
+    open my $md_fh, "<", $rmd{outfile}
+      or die "Cannot open rmarkdown output: $!";
+    @{$md_contents_ref} = <$md_fh>;
+    close $md_fh;
+    for ( @{ $rmd{lua_filters} } ) {
+      push @{$pandoc_opt_ref}, qq(--lua-filter="$_");
+      if ( $_ =~ m{rmarkdown/rmarkdown/lua/pagebreak.lua$} ) {
+        $ENV{RMARKDOWN_LUA_SHARED} = s{pagebreak\.lua}{shared.lua}r;
+      }
     }
 
-    say $rmd{outfile};
-    if ($rmd{run_pandoc} eq 'no') {
-        open my $md_fh, "<", $rmd{outfile}
-            or die "Cannot open rmarkdown output: $!";
-        @{$md_contents_ref} = <$md_fh>;
-        close $md_fh;
-        for (@{$rmd{lua_filters}}) {
-            push @{$pandoc_opt_ref}, qq(--lua-filter="$_");
-            if ($_ =~ m{rmarkdown/rmarkdown/lua/pagebreak.lua$}) {
-                $ENV{RMARKDOWN_LUA_SHARED} = s{pagebreak\.lua}{shared.lua}r;
-            }
-        }
-
-        push @files_needed_clean, $rmd{outfile};
-        push @{$pandoc_opt_ref}, "--variable=graphics";
-    }
-    return %rmd;
+    push @files_needed_clean, $rmd{outfile};
+    push @{$pandoc_opt_ref},  "--variable=graphics";
+  }
+  return %rmd;
 }
 
 # Merge yaml ------------------------------------------------------------ {{{2
 sub merge_yaml {
-  my ($hash1, $hash2) = @_;
-  for my $key (keys %$hash2) {
-    if (exists $hash1->{$key}) {
-      if (ref $hash1->{$key} eq 'HASH' && ref $hash2->{$key} eq 'HASH') {
+  my ( $hash1, $hash2 ) = @_;
+  for my $key ( keys %$hash2 ) {
+    if ( exists $hash1->{$key} ) {
+      if ( ref $hash1->{$key} eq 'HASH' && ref $hash2->{$key} eq 'HASH' ) {
+
         # 递归合并嵌套的哈希
-        merge_yaml($hash1->{$key}, $hash2->{$key});
-      } elsif (ref $hash1->{$key} eq 'ARRAY' && ref $hash2->{$key} eq 'ARRAY') {
+        merge_yaml( $hash1->{$key}, $hash2->{$key} );
+      }
+      elsif ( ref $hash1->{$key} eq 'ARRAY' && ref $hash2->{$key} eq 'ARRAY' ) {
+
         # 合并数组并去除重复项
         my %seen;
-        @{$hash1->{$key}} = grep { !$seen{$_}++ } (@{$hash1->{$key}}, @{$hash2->{$key}});
-      } else {
+        @{ $hash1->{$key} } = grep { !$seen{$_}++ } ( @{ $hash1->{$key} }, @{ $hash2->{$key} } );
+      }
+      else {
         # 覆盖值
         $hash1->{$key} = $hash2->{$key};
       }
-    } else {
+    }
+    else {
       # 直接添加新键
       $hash1->{$key} = $hash2->{$key};
     }
@@ -489,19 +500,19 @@ sub merge_yaml {
 # Substitute environment variable in yaml file -------------------------- {{{2
 sub substitute_environment_variable {
   my $obj = shift or return;
-  if (ref $obj eq 'SCALAR') {
+  if ( ref $obj eq 'SCALAR' ) {
     $$obj =~ s/\$[{]?([\w]+)[}]?/$ENV{$1}/e;
   }
-  elsif (ref $obj eq 'ARRAY') {
+  elsif ( ref $obj eq 'ARRAY' ) {
     for (@$obj) {
-      if (ref $_ eq q[]) { substitute_environment_variable(\$_) }
-      else               { substitute_environment_variable($_)  }
+      if   ( ref $_ eq q[] ) { substitute_environment_variable( \$_ ) }
+      else                   { substitute_environment_variable($_) }
     }
   }
-  elsif (ref $obj eq 'HASH') {
-    for (keys %$obj) {
-      if (ref $obj->{$_} eq q[]) { substitute_environment_variable(\ $obj->{$_} ) }
-      else                       { substitute_environment_variable($obj->{$_} )  }
+  elsif ( ref $obj eq 'HASH' ) {
+    for ( keys %$obj ) {
+      if   ( ref $obj->{$_} eq q[] ) { substitute_environment_variable( \$obj->{$_} ) }
+      else                           { substitute_environment_variable( $obj->{$_} ) }
     }
   }
   else {
@@ -521,57 +532,53 @@ sub load_pandoc_defaults {
 
 # 处理 quarto 文件 ------------------------------------------------------ {{{2
 sub render_qmd {
-  my ($infile, $outformat, $outfile) = @_;
+  my ( $infile, $outformat, $outfile ) = @_;
 
   # quarto / pandoc 的 --from 格式和输出文件的后缀名不完全一样，比如
   # beamer 对应的后缀名应该是 pdf
   # 另外，有时并不需要 quarto 直接得到最后的文件，因此，需要一个中间格式
   # 比如，生成 pdf 时，我希望将其渲染成 latex 文件，然后在通过 latexmk 将中间文
   # 件渲染成最终的 pdf 文件
-  my $quarto_options = LoadFile(File::Spec->catfile($RealBin, "quarto_option.yaml"));
-  my $quarto_target = $quarto_options->{$outformat}{intermediate} // $outformat;
+  my $quarto_options    = LoadFile( File::Spec->catfile( $RealBin, "quarto_option.yaml" ) );
+  my $quarto_target     = $quarto_options->{$outformat}{intermediate}     // $outformat;
   my $quarto_target_ext = $quarto_options->{$outformat}{intermediate_ext} // $quarto_target;
   $outfile =~ s/\.\w+$/"." . $quarto_target_ext/e if $quarto_target_ext ne $outformat;
   $outformat = $quarto_options->{$outformat}{ext} // $outformat;
 
   # 在用户已经定义了 _metadata.yml 时，临时保存，并确保在函数退出后恢复
-  my $metadata_exist = 0;
+  my $metadata_exist     = 0;
   my $metadata_generated = 0;
-  my $guard = guard {
+  my $guard              = guard {
     unlink "_metadata.yml" if $metadata_generated;
     move "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
   };
-  if (-e "_metadata.yml") {
+  if ( -e "_metadata.yml" ) {
     move "_metadata.yml" => "_metadata.yml_bck" and $metadata_exist = 1;
   }
 
   # 处理元数据，载入 pandoc 的默认配置文件，并整合 quarto 的 _metadata.yml 文件
   # 替换默认配置文件中环境变量
   my $meta_data = load_pandoc_defaults("$ENV{HOME}/.pandoc/defaults/2${quarto_target}.yaml");
-  merge_yaml($meta_data, LoadFile("_metadata.yml_bck")) if -e -r "_metadata.yml_bck";
+  merge_yaml( $meta_data, LoadFile("_metadata.yml_bck") ) if -e -r "_metadata.yml_bck";
+
   # 解决 quarto 找不到 pandoc template 对应的文件的问题
-  for (keys %$meta_data) {
-    if ($_ eq "template" and not File::Spec->file_name_is_absolute($meta_data->{$_})) {
-      next unless ref $meta_data->{$_} eq q[];
+  for ( keys %$meta_data ) {
+    if ( $_ eq "template" and not File::Spec->file_name_is_absolute( $meta_data->{$_} ) ) {
+      next                                  unless ref $meta_data->{$_} eq q[];
       $meta_data->{$_} .= ".$quarto_target" unless $meta_data->{$_} =~ m/\.\w+$/;
-      $meta_data->{$_} = File::Spec->catfile($ENV{HOME}, ".pandoc", "templates", $meta_data->{$_})
+      $meta_data->{$_} = File::Spec->catfile( $ENV{HOME}, ".pandoc", "templates", $meta_data->{$_} );
     }
   }
-  DumpFile("_metadata.yml", $meta_data) and $metadata_generated = 1;
+  DumpFile( "_metadata.yml", $meta_data ) and $metadata_generated = 1;
 
-  if ($meta_data->{lang}) {
+  if ( $meta_data->{lang} ) {
     $LANG = $meta_data->{lang};
   }
 
   # 使用 quarto render 文件
-  system(
-    "quarto",
-    "render", "$infile",
-    "--to", $quarto_target,
-    "--output", $outfile,
+  system( "quarto", "render", "$infile", "--to", $quarto_target, "--output", $outfile,
     "--lua-filter", "$ENV{HOME}/.pandoc/filters/quarto_docx_embeded_table.lua",
-    "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua"
-  ) == 0
+    "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua" ) == 0
     or die "Failed to run quarto: $?";
 
   # 在正常运行的情况下，提前清理临时文件
@@ -580,24 +587,24 @@ sub render_qmd {
   $guard->dismiss();
 
   # 进一步处理 quarto render 后的文件
-  if ($outformat eq "html") {
+  if ( $outformat eq "html" ) {
     open my $read_content, "<", $outfile;
     my @html_contents = <$read_content>;
     close $read_content;
-    str_adj_etal(\@html_contents);
-    str_adj_html(\@html_contents);
+    str_adj_etal( \@html_contents );
+    str_adj_html( \@html_contents );
     if ($PREVIEW) {
       for (@html_contents) {
         last if s/^(\s*<title>).+(<\/title>)\s*$/${1}quarto_preview_in_browser${2}/;
       }
     }
-    write2file(\@html_contents, $OUTFILE);
+    write2file( \@html_contents, $OUTFILE );
     if ($PREVIEW) {
       my $current_win_id = qx/xdotool getactivewindow/;
       chomp($current_win_id);
       my $surf_window_id = qx(xdotool search --onlyvisible --name quarto_preview_in_browser | head -n 1);
       chomp($surf_window_id);
-      if (not defined $surf_window_id or $surf_window_id eq "") {
+      if ( not defined $surf_window_id or $surf_window_id eq "" ) {
         exec qq(setsid surf "$OUTFILE" &>/dev/null);
       }
 
@@ -607,31 +614,32 @@ sub render_qmd {
       )
     }
   }
-  elsif ($outformat eq "pdf") {
+  elsif ( $outformat eq "pdf" ) {
     open my $read_content, "<", $outfile
-        or die "cannot open file $outfile: $!";
+      or die "cannot open file $outfile: $!";
     my @tex_contents = <$read_content>;
     close $read_content;
 
     # 微调 tex 文件
-    str_adj_tex(\@tex_contents);
+    str_adj_tex( \@tex_contents );
 
     # 将 tex 文件转换成 pdf 文件
-    my $dir = tempdir(CLEANUP => 1);
-    my $intermediate = File::Spec->catfile($dir, "intermediate.tex");
-    write2file(\@tex_contents, $intermediate);
-    my $pdfmk = $VERBOSE ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
-                         : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
+    my $dir          = tempdir( CLEANUP => 1 );
+    my $intermediate = File::Spec->catfile( $dir, "intermediate.tex" );
+    write2file( \@tex_contents, $intermediate );
+    my $pdfmk =
+      $VERBOSE
+      ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
+      : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
     system($pdfmk) == 0 or die "Failed to render latex file: $?";
     unlink $outfile unless $KEEP_INTERMEDIATES;
 
-    my $target_file = ($outfile =~ s/${quarto_target_ext}$/pdf/r);
+    my $target_file = ( $outfile =~ s/${quarto_target_ext}$/pdf/r );
     move "$dir/intermediate.pdf" => $target_file;
     say $target_file;
   }
-  elsif ($outformat eq "docx") {
+  elsif ( $outformat eq "docx" ) {
     str_adj_word($outfile) if $LANG eq "zh";
   }
 }
-
 
