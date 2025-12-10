@@ -87,6 +87,8 @@ elsif ( $FROM eq "rmd" ) {
   }
   my %rmdopt = knit_rmd2( $INFILE // $tpfile, $OUTFORMAT, \@MD_CONTENTS, \@PANDOC, $LOG_FILE );
   $OUTFORMAT = $rmdopt{to} // $rmdopt{ext};
+  use Data::Dump qw(dump);
+  dump %rmdopt;
   if ( $rmdopt{run_pandoc} eq "no" ) {
     $OUTFILE =~ s/\.\w+$/"." . $rmdopt{ext}/e;
   }
@@ -445,6 +447,8 @@ sub knit_rmd2 {
   }
   my %rmd = %{ LoadFile($result) };
   unlink $result;
+  use Data::Dump qw(dump);
+  dump %rmd;
 
   if ( defined $rmd{knit_meta} and -f $rmd{knit_meta} ) {
     push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
