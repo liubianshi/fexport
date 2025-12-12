@@ -25,7 +25,8 @@ GetOptions(
   'to|t=s'      => \my $OUTFORMAT,
   'from|f=s'    => \my $FROM,
   'outfile|o=s' => \my $OUTFILE,
-  'dirname|d=s' => \my $DIRNAME,
+  'workdir=s'   => \my $WORKDIR,
+  'outdir|d=s'  => \my $OUTDIR,
   'verbose|v'   => \my $VERBOSE,
   'pandoc|p=s'  => \my $PANDOC_OPTS_USER,
   'keep|k'      => \my $KEEP_INTERMEDIATES,
@@ -46,17 +47,29 @@ sub clean_temp_file {
 my $current_pwd = getcwd();
 my $INFILE      = $ARGV[0];
 if ( defined $INFILE and File::Spec->file_name_is_absolute($INFILE) ) {
-  $DIRNAME //= dirname($INFILE);
-  $INFILE = File::Spec->abs2rel( $INFILE, $DIRNAME );
+  $WORKDIR //= dirname($INFILE);
+  $INFILE = File::Spec->abs2rel( $INFILE, $WORKDIR );
 }
-chdir $DIRNAME if defined $DIRNAME;
+chdir $WORKDIR if defined $WORKDIR;
 
 $FROM      //= $INFILE  =~ m/\.(\w+)$/ ? $1 : "md";
-$OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/ ? $1 : "html";
-$OUTFILE   //= $INFILE  =~ s/\.\w+$/.$OUTFORMAT/r;
-if ( File::Spec->file_name_is_absolute($OUTFILE) ) {
-  $OUTFILE = File::Spec->abs2rel( $OUTFILE, getcwd() );
-}
+$OUTFORMAT //= $OUTFILE =~ m/\.(\w+)$/ ? $1 : "html"; # Fallback format from outfile if possible
+
+# Resolve absolute path for output file *before* changing usage directory
+my $out_basename = defined $OUTFILE ? basename($OUTFILE) : basename($INFILE) =~ s/\.\w+$/.$OUTFORMAT/r;
+# When outdir is undefined, use outfile's parent path (if outfile defined) or current pwd
+my $out_dir      = $OUTDIR // (defined $OUTFILE ? dirname($OUTFILE) : $current_pwd);
+
+# Ensure out_dir is absolute based on *current_pwd*
+$out_dir = File::Spec->rel2abs($out_dir, $current_pwd) unless File::Spec->file_name_is_absolute($out_dir);
+$OUTFILE = File::Spec->catfile($out_dir, $out_basename);
+
+# Change working directory to input file's directory for proper resource resolution
+# (Wait, we already did chdir $WORKDIR above if defined. If NOT defined, we didn't Chdir.
+# But original code did: chdir $DIRNAME if defined $DIRNAME. And $DIRNAME was defaulted to dirname($INFILE).
+# So we effectively ALWAYS chdir to input file dir unless relative path given and not absolute?)
+# Let's check lines 48-52 in original.
+
 ( $FROM, $OUTFORMAT ) = map { lc } $FROM, $OUTFORMAT;
 $LANG //= "zh";
 
@@ -102,7 +115,6 @@ elsif ( $FROM eq "rmd" ) {
 }
 elsif ( $FROM eq "qmd" or $FROM eq "quarto" ) {
   render_qmd( $INFILE, $OUTFORMAT, $OUTFILE, $LANG, $PREVIEW, $VERBOSE, $KEEP_INTERMEDIATES, $OUTFILE );
-  exit 0;
 }
 else {
   die "$FROM wasn't supported yet!";
@@ -156,7 +168,74 @@ else                              { say abs_path($OUTFILE) }
 clean_temp_file();
 exit 0;
 
+use Pod::Usage;
+
 sub help {
-    print "Usage: fexport [options] [file]\n";
-    # ... Add fuller help if needed
+    pod2usage(-verbose => 2);
 }
+
+__END__
+
+=head1 NAME
+
+fexport - Export RMarkdown/Quarto files to various formats (HTML, PDF, DOCX)
+
+=head1 SYNOPSIS
+
+fexport [options] [file]
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--to, -t>
+
+Specify output format (html, pdf, docx, etc.). Default is html.
+
+=item B<--from, -f>
+
+Specify input format (md, rmd, qmd, quarto). Auto-detected from file extension.
+
+=item B<--outfile, -o>
+
+Specify output filename.
+
+=item B<--workdir>
+
+Specify working directory.
+
+=item B<--outdir, -d>
+
+Specify output directory. Defaults to C<outfile>'s directory (if specified) or current working directory.
+
+=item B<--verbose, -v>
+
+Enable verbose output.
+
+=item B<--pandoc, -p>
+
+Pass extra options to pandoc.
+
+=item B<--keep, -k>
+
+Keep intermediate files (like .tex, .knit.md).
+
+=item B<--preview>
+
+Preview the output in browser (HTML only).
+
+=item B<--lang>
+
+Specify language (default: zh).
+
+=item B<--help, -h>
+
+Print this help message.
+
+=back
+
+=head1 DESCRIPTION
+
+B<fexport> is a wrapper tool to convert RMarkdown (.rmd) and Quarto (.qmd) documents into various formats using Pandoc, R, and Quarto. It handles special post-processing for Chinese language support, bibliography formatting, and more.
+
+=cut

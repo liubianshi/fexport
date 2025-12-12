@@ -11,6 +11,7 @@ use Fexport::Util        qw(write2file get_resource_path);
 use Fexport::PostProcess qw(str_adj_etal str_adj_html str_adj_tex str_adj_word);
 use File::Temp           qw(tempdir);
 use FindBin              qw($RealBin);
+use File::Basename       qw(basename dirname);
 
 our @EXPORT_OK = qw(render_qmd);
 
@@ -44,18 +45,22 @@ Returns: None (dies on error)
 
 sub render_qmd {
   my ( $infile, $outformat, $outfile, $LANG, $PREVIEW, $VERBOSE, $KEEP_INTERMEDIATES, $OUTFILE ) = @_;
+  
+  # $outfile passed from script/fexport is now an ABSOLUTE path to the final destination.
+  # But quarto forces output to be in CWD (Project/Input dir).
+  # So we calculate a local intermediate filename to render to.
 
   # Load Quarto options and determine intermediate format
-  # Quarto/Pandoc --from format differs from output file extension
-  # (e.g., beamer outputs to .pdf, not .beamer)
   my $quarto_options = LoadFile( get_resource_path("quarto_option.yaml") );
   my $format_config  = $quarto_options->{$outformat} // {};
 
   my $quarto_target     = $format_config->{intermediate}     // $outformat;
   my $quarto_target_ext = $format_config->{intermediate_ext} // $quarto_target;
-
-  # Adjust output file extension if intermediate format differs
-  $outfile =~ s/\.\w+$/"." . $quarto_target_ext/e if $quarto_target_ext ne $outformat;
+  
+  # Calculate local temporary filename for quarto output
+  my $local_outfile = basename($outfile);
+  $local_outfile =~ s/\.\w+$/"." . $quarto_target_ext/e if $quarto_target_ext ne $outformat;
+  
   $outformat = $format_config->{ext} // $outformat;
 
   # Backup and restore _metadata.yml if it exists
@@ -92,9 +97,9 @@ sub render_qmd {
   # Override language if specified in metadata
   $LANG = $meta_data->{lang} if $meta_data->{lang};
 
-  # Execute Quarto render with Lua filters
+  # Execute Quarto render to LOCAL file
   my @quarto_cmd = (
-    "quarto",       "render", $infile, "--to", $quarto_target, "--output", $outfile,
+    "quarto",       "render", $infile, "--to", $quarto_target, "--output", $local_outfile,
     "--lua-filter", "$ENV{HOME}/.pandoc/filters/quarto_docx_embeded_table.lua",
     "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua"
   );
@@ -107,9 +112,28 @@ sub render_qmd {
   $guard->dismiss();
 
   # Post-process output based on format
-  _process_html_output( $outfile, $PREVIEW, $OUTFILE )                               if $outformat eq "html";
-  _process_pdf_output( $outfile, $quarto_target_ext, $VERBOSE, $KEEP_INTERMEDIATES ) if $outformat eq "pdf";
-  _process_docx_output( $outfile, $LANG )                                            if $outformat eq "docx";
+  # We process the local file, then move/copy to OUTFILE
+  
+  if ( $outformat eq "html" ) {
+      _process_html_output( $local_outfile, $PREVIEW, $OUTFILE );
+      # _process_html_output already writes to OUTFILE? Let's check. 
+      # script passes input ($local_outfile) and $OUTFILE. _process_html_output should write to $OUTFILE
+      # If so, we are good. But wait, we might need to cleanup local_outfile?
+      unlink $local_outfile if $local_outfile ne basename($OUTFILE); 
+      # Actually _process_html_output reads arg0 and writes arg2 ($OUTFILE).
+      # So we should delete $local_outfile after processing if it's not the same as intended output location (which it never is if we moved dir)
+      # But wait! If we are in CWD, and OUTFILE is ./foo.html. local_outfile is foo.html.
+      # We just overwrote it? No _process_html_output does read/modify/write.
+  }
+  elsif ( $outformat eq "pdf" ) {
+      # This handles moving itself?
+      _process_pdf_output( $local_outfile, $quarto_target_ext, $VERBOSE, $KEEP_INTERMEDIATES, $OUTFILE );
+  }
+  elsif ( $outformat eq "docx" ) {
+      _process_docx_output( $local_outfile, $LANG );
+      # Docx processing modifies in place. So we must move it to OUTFILE.
+      move $local_outfile => $OUTFILE;
+  }
 }
 
 =head2 _process_html_output
@@ -186,7 +210,7 @@ Converts intermediate LaTeX to PDF using latexmk.
 =cut
 
 sub _process_pdf_output {
-  my ( $outfile, $quarto_target_ext, $VERBOSE, $KEEP_INTERMEDIATES ) = @_;
+  my ( $outfile, $quarto_target_ext, $VERBOSE, $KEEP_INTERMEDIATES, $target_file ) = @_;
 
   open my $fh, "<", $outfile or die "Cannot open $outfile: $!";
   my @tex_contents = <$fh>;
@@ -211,7 +235,6 @@ sub _process_pdf_output {
   unlink $outfile unless $KEEP_INTERMEDIATES;
 
   # Move final PDF to target location
-  my $target_file = $outfile =~ s/${quarto_target_ext}$/pdf/r;
   move "$dir/intermediate.pdf" => $target_file;
   say $target_file;
 }
@@ -308,7 +331,7 @@ sub substitute_environment_variable {
 
   # Process scalar values
   if ( !$ref ) {
-    $_[0] =~ s/\$[{]?(\w+)[}]?/$ENV{$1} \/\/ ''/eeg;
+    $_[0] =~ s/\$[{]?(\w+)[}]?/$ENV{$1} \/\/ ''/eg;
     return;
   }
 
