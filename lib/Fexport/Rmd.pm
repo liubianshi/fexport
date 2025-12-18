@@ -1,150 +1,102 @@
 package Fexport::Rmd;
+
+use v5.20;
 use strict;
 use warnings;
-use v5.20;
+use utf8;
 use Exporter 'import';
-use YAML qw(LoadFile);
-use File::Spec;
-use File::Temp qw(tempfile tempdir);
-use File::Basename qw(fileparse);
-use FindBin qw($RealBin);
-use Fexport::Util qw(get_resource_path);
 
-our @EXPORT_OK = qw(knit_rmd2);
+use Path::Tiny;
+use YAML          qw(LoadFile);
+use IPC::Run3     qw(run3);
+use Fexport::Util qw(find_resource);
 
-my %rmd_render_option = (
-  pdf => {
-    out => "rmarkdown::pdf_document",
-    ext => "pdf"
-  },
-  pdfbook => {
-    render            => "bookdown::render_book",
-    out               => "bookdown::pdf_document2",
-    outfile           => "draft.knit.md",
-    intermediates_dir => "_cache",
-    ext               => "pdf",
-    opt               => [
-      q/number_section = FALSE/,
-      q/keep_md        = TRUE/,
-      q/tables         = list(caption = list(pre = '表', sep = '  '))/,
-      q/plots          = list(caption = list(pre = '图', sep = '  '))/,
-    ],
-  },
-  rdocxbook => {
-    out               => "officedown::rdocx_document",
-    render            => "bookdown::render_book",
-    outfile           => "draft.docx",
-    intermediates_dir => "_cache",
-    output_dir        => ".",
-    run_pandoc        => "TRUE",
-    opt               => [
-      q/base_format    = 'bookdown::word_document2'/,
-      q/number_section = FALSE/,
-      q/pandoc_args    = c('-d2docx', '--lua-filter=rsbc.lua')/,
-      q/keep_md        = TRUE/,
-      q/tables         = list(caption = list(pre = '表', sep = '  '))/,
-      q/plots          = list(caption = list(pre = '图', sep = '  '))/,
-    ],
-    ext => "docx",
-  },
-  mdbook => {
-    out               => "bookdown::markdown_document2",
-    render            => "bookdown::render_book",
-    intermediates_dir => ".",
-    opt => [ q/base_format    = 'bookdown::word_document2'/, q/number_section = FALSE/, q/keep_md        = TRUE/ ],
-    ext => "docx",
-  },
-  docxbook => {
-    out               => "bookdown::word_document2",
-    render            => "bookdown::render_book",
-    intermediates_dir => "_cache",
-    output_dir        => ".",
-    outfile           => "draft.docx",
-    run_pandoc        => "TRUE",
-    opt               =>
-      [ q/pandoc_args    = c('-d2docx', '--lua-filter=rsbc.lua')/, q/number_section = FALSE/, q/keep_md  = TRUE/, ],
-    ext => "docx",
-  },
-  odt  => { out => "rmarkdown::odt_document", ext => "odt" },
-  docx => {
-    out               => "officedown::rdocx_document",
-    intermediates_dir => ".",
-    opt               => [
-      qq/tables = list(caption = list(pre = 'Table:', sep = '  '))/,
-      qq/plots  = list(caption = list(pre = 'Figure:', sep = '  '))/,
-    ],
-    ext => "docx",
-  },
-  pptx => {
-    out => "officedown::rpptx_document",
-    opt => [
-      qq/base_format = 'rmarkdown::powerpoint_presentation'/,
-      qq/toc = TRUE/,
-      qq/toc_depth = 1/,
-      qq/slide_level = 2/,
-    ],
-    to         => "pptx",
-    ext        => "pptx"
-  },
-  beamer => {
-    out => "rmarkdown::beamer_presentation",
-    opt => [ qq/slide_level = 2/, ],
-    to  => "beamer",
-    ext => "pdf",
-  },
-  html     => { out => "rmarkdown::html_document", ext => "html", opt => [] },
-  htmlbook => { out => "bookdown::html_document2", ext => "html", opt => [] },
-);
+our @EXPORT_OK = qw(render_rmd);
 
-sub knit_rmd2 {
-  my ( $infile, $to, $md_contents_ref, $pandoc_opt_ref, $logfile ) = @_;
+sub render_rmd {
+  my ( $infile_raw, $to_format, $pandoc_opts_ref ) = @_;
 
-  # $infile, 待转换的原文件
-  # $to，转换的目标格式
-  # $md_contest, markdown 文件的内容，列表引用格式
-  # $pandoc_options, pandoc 选项，列表引用格式
-  
-  # Forward variable declaration to handle clean up (files_needed_clean is likely global in script, need adapt)
-  # For now, we will return the file to clean
-  my @files_needed_clean = ();
+  # 1. 准备路径
+  my $infile = path($infile_raw)->absolute;
+  die "Error: Input file '$infile_raw' not found.\n" unless $infile->exists;
 
-  my $rscript_path = get_resource_path( "parse_rmd.R" );
-  my $rmd_opt_path = get_resource_path( "rmd_option.yaml" );
-  my ( $result_fh, $result ) = tempfile();
-  close $result_fh;
+  my $rscript_path = find_resource("parse_rmd.R");
+  my $rmd_opt_path = find_resource("rmd_option.yaml");
 
-  if ( system(qq{$rscript_path $to "$infile" "$rmd_opt_path" "$result"}) != 0 ) {
-    unlink $result;
-    die "Failed to parse $infile: $?";
-  }
-  my %rmd = %{ LoadFile($result) };
-  unlink $result;
-  # use Data::Dump qw(dump);
-  # dump %rmd;
+  die "Error: 'parse_rmd.R' not found.\n"     unless $rscript_path && -e $rscript_path;
+  die "Error: 'rmd_option.yaml' not found.\n" unless $rmd_opt_path && -e $rmd_opt_path;
 
-  if ( defined $rmd{knit_meta} and -f $rmd{knit_meta} ) {
-    push @{$pandoc_opt_ref}, "--include-in-header=" . $rmd{knit_meta};
+  # 2. 准备接收 R 结果的临时文件
+  my $meta_yaml_tmp = Path::Tiny->tempfile( SUFFIX => '.yaml' );
+
+  # 3. 调用 R 脚本
+  # 命令格式: Rscript parse_rmd.R <format> <infile> <config> <output_yaml>
+  my @cmd = ( 'Rscript', $rscript_path, $to_format, $infile->stringify, $rmd_opt_path, $meta_yaml_tmp->stringify );
+
+  # 安全执行
+  if ( system(@cmd) != 0 ) {
+    die "RMarkdown rendering failed (Exit code: $?).\n";
   }
 
-  say $rmd{outfile};
-  if ( $rmd{run_pandoc} eq 'no' ) {
-    open my $md_fh, "<", $rmd{outfile}
-      or die "Cannot open rmarkdown output: $!";
-    @{$md_contents_ref} = <$md_fh>;
-    close $md_fh;
-    for ( @{ $rmd{lua_filters} } ) {
-      push @{$pandoc_opt_ref}, qq(--lua-filter="$_");
-      if ( $_ =~ m{rmarkdown/rmarkdown/lua/pagebreak.lua$} ) {
-        $ENV{RMARKDOWN_LUA_SHARED} = s{pagebreak\.lua}{shared.lua}r;
+  # 4. 读取 R 返回的元数据
+  my $meta = LoadFile( $meta_yaml_tmp->stringify );
+
+  # 5. 处理结果
+  my @clean_files;
+  my @md_lines;
+
+  # A. 添加 LaTeX 依赖
+  if ( $meta->{knit_meta} && -f $meta->{knit_meta} ) {
+    push @$pandoc_opts_ref, "--include-in-header=" . $meta->{knit_meta};
+
+    # knit_meta 文件通常在 cache 里，是否需要清理视情况而定
+  }
+
+  # B. 处理 Lua Filters (从 R 包中动态获取的路径)
+  if ( $meta->{lua_filters} && ref $meta->{lua_filters} eq 'ARRAY' ) {
+    for my $lua ( @{ $meta->{lua_filters} } ) {
+      push @$pandoc_opts_ref, "--lua-filter=$lua";
+
+      # 特殊处理 pagebreak.lua 依赖的 shared.lua
+      if ( $lua =~ m{pagebreak\.lua$} ) {
+        my $shared = $lua;
+        $shared =~ s{pagebreak\.lua}{shared.lua};
+        $ENV{RMARKDOWN_LUA_SHARED} = $shared if -e $shared;
       }
     }
-
-    push @files_needed_clean, $rmd{outfile};
-    push @{$pandoc_opt_ref},  "--variable=graphics";
   }
-  
-  $rmd{files_needed_clean} = \@files_needed_clean;
-  return %rmd;
+
+  # C. 检查是否需要读取中间 Markdown 内容
+  # 如果 R 配置说 run_pandoc = FALSE (或 'no')，说明 Pandoc 步骤由 Perl 接管
+  # 这时我们需要读取 R 生成的中间文件 (.knit.md 或 .md)
+  # 注意：YAML 中的布尔值 false 在 Perl YAML::LoadFile 中可能解析为 '' 或 0
+  my $run_pandoc = $meta->{run_pandoc};
+
+  # 规范化布尔判断
+  my $is_pandoc_run_by_r =
+    ( defined $run_pandoc && ( $run_pandoc eq 'true' || $run_pandoc eq '1' || $run_pandoc eq 'TRUE' ) );
+
+  unless ($is_pandoc_run_by_r) {
+    my $outfile = path( $meta->{outfile} );
+
+    if ( $outfile->exists ) {
+      @md_lines = $outfile->lines_utf8;
+      push @clean_files,      $outfile->stringify;
+      push @$pandoc_opts_ref, "--variable=graphics";
+
+      say "[Perl] Loaded intermediate content from: $outfile";
+    }
+    else {
+      warn "[Warn] R script finished but output file '$outfile' is missing.\n";
+    }
+  }
+
+  # 6. 返回结构化结果
+  return {
+    meta        => $meta,
+    md_lines    => \@md_lines,      # 如果有内容，说明需要 Perl 继续跑 Pandoc
+    clean_files => \@clean_files,
+  };
 }
 
 1;

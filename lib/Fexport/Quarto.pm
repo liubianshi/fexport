@@ -1,378 +1,355 @@
 package Fexport::Quarto;
+
+use v5.20;
 use strict;
 use warnings;
-use v5.20;
 use Exporter 'import';
-use YAML qw(LoadFile DumpFile);
+
+# 核心依赖更新
+use Path::Tiny;
+use Digest::MD5 qw(md5_hex);
 use File::Spec;
-use File::Copy           qw(move);
-use Scope::Guard         qw(guard);
-use Fexport::Util        qw(write2file get_resource_path);
-use Fexport::PostProcess qw(str_adj_etal str_adj_html str_adj_tex str_adj_word);
-use File::Temp           qw(tempdir);
-use FindBin              qw($RealBin);
-use File::Basename       qw(basename dirname);
+use YAML         qw(LoadFile DumpFile);
+use Scope::Guard qw(guard);
+use List::Util   qw(uniq);
+use IPC::Run3    qw(run3);                # 用于捕获 xdotool 输出等
+use List::Util   qw(uniq);
+use POSIX        qw(setsid);
+use IPC::Cmd     qw(can_run);
+
+use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir);
+use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 
 our @EXPORT_OK = qw(render_qmd);
 
-=head2 render_qmd
-
-Renders a Quarto markdown file to various output formats.
-
-=over 4
-
-=item * C<$infile> - Input Quarto markdown file path
-
-=item * C<$outformat> - Desired output format (html, pdf, docx, etc.)
-
-=item * C<$outfile> - Output file path
-
-=item * C<$LANG> - Language code for document processing
-
-=item * C<$PREVIEW> - Boolean flag to enable browser preview mode
-
-=item * C<$VERBOSE> - Boolean flag for verbose output
-
-=item * C<$KEEP_INTERMEDIATES> - Boolean flag to preserve intermediate files
-
-=item * C<$OUTFILE> - Final output file path
-
-=back
-
-Returns: None (dies on error)
-
-=cut
+# 常量定义
+my $PANDOC_DIR = path( find_pandoc_datadir() );
 
 sub render_qmd {
-  my ( $infile, $outformat, $outfile, $LANG, $PREVIEW, $VERBOSE, $KEEP_INTERMEDIATES, $OUTFILE ) = @_;
-  
-  # $outfile passed from script/fexport is now an ABSOLUTE path to the final destination.
-  # But quarto forces output to be in CWD (Project/Input dir).
-  # So we calculate a local intermediate filename to render to.
+  my ( $infile_raw, $outformat, $outfile_final, $lang, $preview, $verbose, $keep_intermediates, $outfile_abs_path ) =
+    @_;
 
-  # Load Quarto options and determine intermediate format
-  my $quarto_options = LoadFile( get_resource_path("quarto_option.yaml") );
-  my $format_config  = $quarto_options->{$outformat} // {};
+  # 1. 路径对象化
+  # $outfile_abs_path 是最终目标的绝对路径 (由脚本传入)
+  # Quarto 强制在 CWD 生成文件，所以我们需要计算一个临时的本地文件名
+  my $infile     = path($infile_raw)->absolute;
+  my $final_dest = path($outfile_abs_path);
 
+  # 2. 加载 Quarto 配置
+  my $quarto_config_file = find_resource("quarto_option.yaml");
+  my $quarto_options     = -e $quarto_config_file ? LoadFile($quarto_config_file) : {};
+  my $format_config      = $quarto_options->{$outformat} // {};
+
+  # 确定中间格式 (例如 pdf -> latex) 和扩展名
   my $quarto_target     = $format_config->{intermediate}     // $outformat;
   my $quarto_target_ext = $format_config->{intermediate_ext} // $quarto_target;
-  
-  # Calculate local temporary filename for quarto output
-  my $local_outfile = basename($outfile);
-  $local_outfile =~ s/\.\w+$/"." . $quarto_target_ext/e if $quarto_target_ext ne $outformat;
-  
-  $outformat = $format_config->{ext} // $outformat;
 
-  # Backup and restore _metadata.yml if it exists
-  my ( $metadata_exist, $metadata_generated ) = ( 0, 0 );
-  my $guard = guard {
-    unlink "_metadata.yml" if $metadata_generated;
-    move "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
-  };
-
-  if ( -e "_metadata.yml" ) {
-    move "_metadata.yml" => "_metadata.yml_bck" and $metadata_exist = 1;
+  # 3. 计算本地临时文件名 (Local Intermediate)
+  # 逻辑：取 final_dest 的文件名，但替换后缀为 quarto 的目标后缀
+  my $local_outfile = path( $final_dest->basename );
+  if ( $quarto_target_ext ne $outformat ) {
+    my $base = $local_outfile->basename(qr/\.[^.]+$/);
+    $local_outfile = path( $base . "." . $quarto_target_ext );
   }
 
-  # Load and merge metadata from Pandoc defaults and existing _metadata.yml
-  my $defaults_path = "$ENV{HOME}/.pandoc/defaults/2${quarto_target}.yaml";
-  my $meta_data     = load_pandoc_defaults($defaults_path);
-
-  if ( -e -r "_metadata.yml_bck" ) {
-    merge_yaml( $meta_data, LoadFile("_metadata.yml_bck") );
-  }
-
-  # Resolve template paths to absolute paths for Quarto compatibility
-  if ( exists $meta_data->{template}
-    && ref $meta_data->{template} eq ''
-    && !File::Spec->file_name_is_absolute( $meta_data->{template} ) )
+  # 4. 元数据 (Metadata) 注入与保护
+  # 使用 Scope::Guard 确保 _metadata.yml 无论如何都会恢复
   {
+    my $meta_file      = path("_metadata.yml");
+    my $backup_file    = path("_metadata.yml_bck");
+    my $generated_meta = 0;
 
-    $meta_data->{template} .= ".${quarto_target}" unless $meta_data->{template} =~ /\.\w+$/;
-    $meta_data->{template} = File::Spec->catfile( $ENV{HOME}, ".pandoc", "templates", $meta_data->{template} );
+    my $guard = guard {
+      $meta_file->remove             if $generated_meta;
+      $backup_file->move($meta_file) if $backup_file->exists;
+    };
+
+    if ( $meta_file->exists ) {
+      $meta_file->move($backup_file);
+    }
+
+    # 加载 Pandoc Defaults 并合并
+    my $defaults_path = $PANDOC_DIR->child( "defaults", "2${quarto_target}.yaml" );
+    my $meta_data     = _load_pandoc_defaults($defaults_path);
+
+    if ( $backup_file->exists ) {
+      my $existing_meta = LoadFile($backup_file);
+      _merge_yaml( $meta_data, $existing_meta );
+    }
+
+    # 修正 Template 路径 (相对 -> 绝对)
+    if ( exists $meta_data->{template} && !path( $meta_data->{template} )->is_absolute ) {
+      my $tmpl_name = $meta_data->{template};
+      $tmpl_name .= ".${quarto_target}" if $tmpl_name !~ /\.\w+$/;
+
+      # 2. 定义探测路径候选列表
+      my $local_tmpl  = path($tmpl_name);                                 # 候选A: 当前工作目录 (CWD)
+      my $pandoc_tmpl = $PANDOC_DIR->child( "templates", $tmpl_name );    # 候选B: ~/.pandoc/templates/
+
+      # 3. 探测逻辑
+      if ( $local_tmpl->exists ) {
+        $meta_data->{template} = $local_tmpl->absolute->stringify;
+      }
+      elsif ( $pandoc_tmpl->exists ) {
+        $meta_data->{template} = $pandoc_tmpl->absolute->stringify;
+      }
+      elsif ( $meta_data->{template} !~ /^\s*default\s*$/ ) {
+        die "Error: Template file '$tmpl_name' not found.\n"
+          . "Searched in:\n"
+          . "  1. Current Directory: "
+          . path('.')->absolute . "\n"
+          . "  2. Pandoc Directory:  "
+          . $PANDOC_DIR->child("templates") . "\n";
+      }
+    }
+
+    # 覆盖语言设置
+    $lang //= $meta_data->{lang};
+    $meta_data->{lang} = $lang;
+
+    DumpFile( $meta_file->stringify, $meta_data );
+    $generated_meta = 1;
+
+    # 5. 执行 Quarto Render
+    my @quarto_cmd = (
+      "quarto",                                                               "render",
+      $infile->stringify,                                                     "--to",
+      $quarto_target,                                                         "--output",
+      $local_outfile->stringify,                                              "--lua-filter",
+      $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify, "--lua-filter",
+      $PANDOC_DIR->child("filters/rsbc.lua")->stringify
+    );
+
+    # 使用列表 system，安全
+    system(@quarto_cmd) == 0 or die "Failed to run quarto: $?";
+
+    # Guard 会在离开此块时自动执行清理恢复
   }
 
-  DumpFile( "_metadata.yml", $meta_data ) and $metadata_generated = 1;
-
-  # Override language if specified in metadata
-  $LANG = $meta_data->{lang} if $meta_data->{lang};
-
-  # Execute Quarto render to LOCAL file
-  my @quarto_cmd = (
-    "quarto",       "render", $infile, "--to", $quarto_target, "--output", $local_outfile,
-    "--lua-filter", "$ENV{HOME}/.pandoc/filters/quarto_docx_embeded_table.lua",
-    "--lua-filter", "$ENV{HOME}/.pandoc/filters/rsbc.lua"
-  );
-
-  system(@quarto_cmd) == 0 or die "Failed to run quarto: $?";
-
-  # Clean up temporary metadata files early on success
-  unlink "_metadata.yml" if $metadata_generated;
-  move "_metadata.yml_bck" => "_metadata.yml" if $metadata_exist;
-  $guard->dismiss();
-
-  # Post-process output based on format
-  # We process the local file, then move/copy to OUTFILE
-  
+  # 6. 后处理与移动 (Post-process & Move)
   if ( $outformat eq "html" ) {
-      _process_html_output( $local_outfile, $PREVIEW, $OUTFILE );
-      # _process_html_output already writes to OUTFILE? Let's check. 
-      # script passes input ($local_outfile) and $OUTFILE. _process_html_output should write to $OUTFILE
-      # If so, we are good. But wait, we might need to cleanup local_outfile?
-      unlink $local_outfile if $local_outfile ne basename($OUTFILE); 
-      # Actually _process_html_output reads arg0 and writes arg2 ($OUTFILE).
-      # So we should delete $local_outfile after processing if it's not the same as intended output location (which it never is if we moved dir)
-      # But wait! If we are in CWD, and OUTFILE is ./foo.html. local_outfile is foo.html.
-      # We just overwrote it? No _process_html_output does read/modify/write.
+    _process_html_output( $local_outfile, $preview, $final_dest );
+
+    # HTML 处理完后，如果 local_outfile 和 final_dest 不一样，清理 local
+    $local_outfile->remove if $local_outfile->absolute ne $final_dest->absolute;
   }
   elsif ( $outformat eq "pdf" ) {
-      # This handles moving itself?
-      _process_pdf_output( $local_outfile, $quarto_target_ext, $VERBOSE, $KEEP_INTERMEDIATES, $OUTFILE );
+    _process_pdf_output( $local_outfile, $verbose, $keep_intermediates, $final_dest );
+
+    # PDF 处理函数内部会移动文件，这里只需清理 tex
+    $local_outfile->remove unless $keep_intermediates;
   }
   elsif ( $outformat eq "docx" ) {
-      _process_docx_output( $local_outfile, $LANG );
-      # Docx processing modifies in place. So we must move it to OUTFILE.
-      move $local_outfile => $OUTFILE;
+
+    # 原代码 bug 修复：先处理，再移动
+    _process_docx_output( $local_outfile, $lang );
+    $local_outfile->move($final_dest);
+  }
+  else {
+    # 默认情况：直接移动
+    $local_outfile->move($final_dest) if $local_outfile->absolute ne $final_dest->absolute;
   }
 }
 
-=head2 _process_html_output
-
-Post-processes HTML output with adjustments and optional browser preview.
-
-=over 4
-
-=item * C<$outfile> - Path to HTML output file
-
-=item * C<$PREVIEW> - Boolean flag for preview mode
-
-=item * C<$OUTFILE> - Final output file path
-
-=back
-
-=cut
+# --- Helpers ---
 
 sub _process_html_output {
-  my ( $outfile, $PREVIEW, $OUTFILE ) = @_;
+  my ( $infile, $preview, $outfile_dest ) = @_;
 
-  open my $fh, "<", $outfile or die "Cannot open $outfile: $!";
-  my @html_contents = <$fh>;
-  close $fh;
+  # 模拟原来的数组引用接口
+  my @lines = $infile->lines_utf8();
 
-  # Apply HTML-specific adjustments
-  str_adj_etal( \@html_contents );
-  str_adj_html( \@html_contents );
+  fix_citation_etal( \@lines );
+  postprocess_html( \@lines );
 
-  # Modify title for preview mode
-  if ($PREVIEW) {
-    for (@html_contents) {
-      last if s/^(\s*<title>).+(<\/title>)\s*$/${1}quarto_preview_in_browser${2}/;
-    }
-  }
+  # 写入最终位置
+  path($outfile_dest)->spew_utf8(@lines);
 
-  write2file( \@html_contents, $OUTFILE );
-
-  # Launch or refresh browser preview
-  if ($PREVIEW) {
-    my $current_win_id = qx/xdotool getactivewindow/;
-    chomp $current_win_id;
-
-    my $surf_window_id = qx(xdotool search --onlyvisible --name quarto_preview_in_browser | head -n 1);
-    chomp $surf_window_id;
-
-    if ( !$surf_window_id ) {
-      exec qq(setsid surf "$OUTFILE" &>/dev/null);
-    }
-
-    exec qq(
-      xdotool windowactivate --sync $surf_window_id key --clearmodifiers ctrl+r && \\
-      xdotool windowactivate $current_win_id
-    );
-  }
+  _launch_browser_preview($outfile_dest) if $preview;
 }
 
-=head2 _process_pdf_output
+sub _launch_browser_preview {
+  my ($target_file) = @_;
 
-Converts intermediate LaTeX to PDF using latexmk.
+  # 1. 检查是否安装了 browser-sync
+  unless ( can_run('browser-sync') ) {
+    warn "[Warn] 'browser-sync' not found. Skipping live preview.\n";
+    return;
+  }
 
-=over 4
+  my $file_obj   = path($target_file);
+  my $server_dir = $file_obj->parent->absolute;
 
-=item * C<$outfile> - Path to intermediate LaTeX file
+  # 2. 计算 PID 文件位置 (存放于系统临时目录)
+  # 算法：系统Temp目录 / fexport-state / <项目路径的MD5>.pid
+  # 这样每个项目目录都有唯一的 PID 文件，互不冲突，且不污染源码目录。
+  my $dir_hash  = md5_hex( $server_dir->stringify );
+  my $sys_tmp   = path( File::Spec->tmpdir );          # Linux通常是 /tmp, Windows是 %TEMP%
+  my $state_dir = $sys_tmp->child("fexport-state");
+  $state_dir->mkpath;
+  my $pid_file = $state_dir->child("preview-$dir_hash.pid");
 
-=item * C<$quarto_target_ext> - Extension of intermediate format
+  # 3. 检查是否已经在运行 (PID 检查逻辑)
+  if ( $pid_file->exists ) {
+    my $pid = $pid_file->slurp;
+    chomp $pid;
 
-=item * C<$VERBOSE> - Boolean flag for verbose output
+    # 使用 kill 0 检查进程是否存在且有权限操作 (不发送实际信号)
+    if ( $pid && kill( 0, $pid ) ) {
+      say "[Preview] Browser-sync is already running (PID: $pid).";
+      say "[Preview] Browser should auto-refresh shortly.";
+      return;    # 直接返回，主程序随后会退出
+    }
+    else {
+      # PID 文件存在但进程不在了 (Stale lock)，清理掉
+      $pid_file->remove;
+    }
+  }
 
-=item * C<$KEEP_INTERMEDIATES> - Boolean flag to preserve intermediate files
+  # 4. 启动新的后台进程
+  say "[Preview] Starting browser-sync in background...";
 
-=back
+  my $pid = fork();
+  if ( !defined $pid ) {
+    warn "Failed to fork: $!";
+    return;
+  }
 
-=cut
+  if ( $pid == 0 ) {
+
+    # === 子进程 (Child) ===
+
+    # A. 创建新的会话，脱离控制终端
+    setsid() or die "Can't start a new session: $!";
+
+    # B. 重定向输入输出，防止阻塞父进程或干扰终端
+    open STDIN,  '<', '/dev/null';
+    open STDOUT, '>', '/dev/null';    # 或者重定向到日志文件
+    open STDERR, '>', '/dev/null';
+
+    # C. 准备命令
+    my $index_file = $file_obj->basename;
+    my @cmd        = (
+      'browser-sync', 'start',
+      '--server',     $server_dir->stringify,
+      '--index',      $index_file,
+      '--files',      $target_file,             # 监听特定文件
+      '--no-notify',                            # 不显示右上角弹窗
+      '--ui',   'false',                        # 不启动 UI 控制面板
+      '--port', '3000'                          # 尽量固定端口，避免多开混乱
+    );
+
+    # D. 执行命令 (exec 会替换当前子进程内存，PID 保持不变)
+    exec(@cmd) or die "Failed to exec browser-sync: $!";
+  }
+
+  # === 父进程 (Parent) ===
+
+  # 4. 记录 PID 到文件，以便下次检查
+  $pid_file->spew($pid);
+
+  say "[Preview] Server started with PID $pid.";
+  say "[Preview] To stop it manually: kill $pid";
+}
 
 sub _process_pdf_output {
-  my ( $outfile, $quarto_target_ext, $VERBOSE, $KEEP_INTERMEDIATES, $target_file ) = @_;
+  my ( $tex_file, $verbose, $keep, $final_pdf_dest ) = @_;
 
-  open my $fh, "<", $outfile or die "Cannot open $outfile: $!";
-  my @tex_contents = <$fh>;
-  close $fh;
+  # 读入 TeX 内容
+  my @lines = $tex_file->lines_utf8;
+  postprocess_latex( \@lines );
 
-  # Apply LaTeX-specific adjustments
-  str_adj_tex( \@tex_contents );
+  # 临时编译目录
+  my $temp_dir = Path::Tiny->tempdir( CLEANUP => !$keep );
+  if ($keep) {
+    say "Intermediate files kept in: $temp_dir";
+  }
 
-  # Compile LaTeX to PDF in temporary directory
-  my $dir          = tempdir( CLEANUP => 1 );
-  my $intermediate = File::Spec->catfile( $dir, "intermediate.tex" );
-  write2file( \@tex_contents, $intermediate );
+  my $temp_tex = $temp_dir->child("intermediate.tex");
+  $temp_tex->spew_utf8(@lines);
 
-  my $latexmk_cmd =
-    $VERBOSE
-    ? qq/latexmk -xelatex -outdir="$dir" "$intermediate"/
-    : qq/latexmk -quiet -xelatex -outdir="$dir" "$intermediate"/;
+  # 构建 latexmk 命令 (列表形式)
+  my @cmd =
+    ( 'latexmk', '-xelatex', "-outdir=" . $temp_dir->stringify, $verbose ? () : '-quiet', $temp_tex->stringify );
 
-  system($latexmk_cmd) == 0 or die "Failed to render LaTeX file: $?";
+  system(@cmd) == 0 or die "Failed to render LaTeX file: $?";
 
-  # Clean up intermediate LaTeX file unless requested to keep
-  unlink $outfile unless $KEEP_INTERMEDIATES;
-
-  # Move final PDF to target location
-  move "$dir/intermediate.pdf" => $target_file;
-  say $target_file;
+  # 移动结果
+  my $generated_pdf = $temp_dir->child("intermediate.pdf");
+  if ( $generated_pdf->exists ) {
+    $generated_pdf->move($final_pdf_dest);
+    say "PDF generated: $final_pdf_dest";
+  }
+  else {
+    die "Error: latexmk finished but PDF not found.";
+  }
 }
-
-=head2 _process_docx_output
-
-Post-processes DOCX output for Chinese language support.
-
-=over 4
-
-=item * C<$outfile> - Path to DOCX output file
-
-=item * C<$LANG> - Language code
-
-=back
-
-=cut
 
 sub _process_docx_output {
-  my ( $outfile, $LANG ) = @_;
-  str_adj_word($outfile) if $LANG eq "zh";
+  my ( $docx_file, $lang ) = @_;
+  if ( $lang eq 'zh' ) {
+
+    # 这里的 postprocess_docx 应该是原地修改 docx (解压-修改-打包)
+    postprocess_docx( $docx_file->stringify );
+  }
 }
 
-=head2 merge_yaml
+# --- Config & Metadata Helpers ---
 
-Recursively merges two YAML/hash structures, with source overriding destination.
+sub _load_pandoc_defaults {
+  my $file = shift;
+  return {} unless defined $file && $file->exists;
 
-=over 4
+  my $yaml = LoadFile($file);
+  _substitute_env($yaml);
+  return $yaml;
+}
 
-=item * C<$dest> - Destination hash reference (modified in place)
+sub _substitute_env {
+  my ($data) = @_;
+  return unless defined $data;
 
-=item * C<$src> - Source hash reference
+  my $ref = ref $data;
+  if ( !$ref ) {
 
-=back
+    # 原地修改 Scalar (利用 $_[0] 的别名特性)
+    # 替换 $VAR 或 ${VAR}，默认为空
+    $_[0] =~ s/\$[{]?(\w+)[}]?/$ENV{$1} \/\/ ''/eg;
+  }
+  elsif ( $ref eq 'HASH' ) {
+    _substitute_env($_) for values %$data;
+  }
+  elsif ( $ref eq 'ARRAY' ) {
+    _substitute_env($_) for @$data;
+  }
+  elsif ( $ref eq 'SCALAR' ) {
+    _substitute_env($$data);
+  }
+}
 
-Returns: None (modifies C<$dest> in place)
-
-=cut
-
-sub merge_yaml {
+sub _merge_yaml {
   my ( $dest, $src ) = @_;
 
   while ( my ( $key, $val_src ) = each %$src ) {
-
-    # Direct assignment if key doesn't exist in destination
     if ( !exists $dest->{$key} ) {
       $dest->{$key} = $val_src;
       next;
     }
 
-    my $val_dest = $dest->{$key};
-    my $r_dest   = ref $val_dest || '';
-    my $r_src    = ref $val_src  || '';
+    my $r_dest = ref $dest->{$key} || '';
+    my $r_src  = ref $val_src      || '';
 
-    # Recursively merge nested hashes
     if ( $r_dest eq 'HASH' && $r_src eq 'HASH' ) {
-      merge_yaml( $val_dest, $val_src );
+      _merge_yaml( $dest->{$key}, $val_src );
     }
-
-    # Merge and deduplicate arrays
     elsif ( $r_dest eq 'ARRAY' && $r_src eq 'ARRAY' ) {
-      my %seen;
-      $dest->{$key} = [ grep { defined $_ ? !$seen{$_}++ : 1 } @$val_dest, @$val_src ];
+      $dest->{$key} = [ uniq( @{ $dest->{$key} }, @$val_src ) ];
     }
-
-    # Overwrite for type mismatches or scalar values
     else {
+      # 其他情况（标量或类型不匹配），直接覆盖
       $dest->{$key} = $val_src;
     }
   }
 }
 
-=head2 substitute_environment_variable
-
-Recursively substitutes environment variables in strings, hashes, and arrays.
-Modifies data structure in place using aliasing.
-
-=over 4
-
-=item * C<$_[0]> - Scalar, hash ref, array ref, or scalar ref to process
-
-=back
-
-Returns: None (modifies input in place)
-
-=cut
-
-sub substitute_environment_variable {
-
-  # Use $_[0] directly for in-place modification via aliasing
-  return unless defined $_[0];
-
-  my $ref = ref $_[0];
-
-  # Process scalar values
-  if ( !$ref ) {
-    $_[0] =~ s/\$[{]?(\w+)[}]?/$ENV{$1} \/\/ ''/eg;
-    return;
-  }
-
-  # Recursively process hash values
-  if ( $ref eq 'HASH' ) {
-    substitute_environment_variable($_) for values %{ $_[0] };
-  }
-
-  # Recursively process array elements
-  elsif ( $ref eq 'ARRAY' ) {
-    substitute_environment_variable($_) for @{ $_[0] };
-  }
-
-  # Dereference and process scalar references
-  elsif ( $ref eq 'SCALAR' ) {
-    substitute_environment_variable( ${ $_[0] } );
-  }
-}
-
-=head2 load_pandoc_defaults
-
-Loads Pandoc defaults YAML file and substitutes environment variables.
-
-=over 4
-
-=item * C<$file> - Path to Pandoc defaults YAML file
-
-=back
-
-Returns: Hash reference of loaded and processed YAML data, or undef if file not readable
-
-=cut
-
-sub load_pandoc_defaults {
-  my $file = shift or return;
-  return unless -r $file;
-
-  my $yaml = LoadFile($file);
-  substitute_environment_variable($yaml);
-  return $yaml;
-}
-
 1;
-

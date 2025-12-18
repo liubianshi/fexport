@@ -1,133 +1,179 @@
-#!/usr/bin/env -S Rscript --no-save --no-restore
-require(yaml)
+#!/usr/bin/env Rscript
+# parse_rmd.R
 
-parse_args <- function(args = NULL) {
-    if (is.null(args)) args <- commandArgs(trailingOnly = TRUE)
-    stopifnot(length(args) >= 3L)
+suppressPackageStartupMessages({
+  require(yaml)
+  require(rmarkdown)
+  require(rlang)
+})
 
-    args_list <- as.list(args[1:4])
-    names(args_list) <- c("outformat", "infile", "yaml_file", "result_file")
+# ------------------------------------------------------------------------------
+# Helper Functions
+# ------------------------------------------------------------------------------
 
-    if (length(args) == 3) {
-        args_list$result_file <- NULL
-    } 
-    args_list
-}
-
+# 更健壮的 Lua Filter 查找
 get_pandoc_lua_filter <- function() {
-    RLib <- .libPaths()[1]
-    c("bookdown/rmarkdown/lua/custom-environment.lua",
-      "rmarkdown/rmarkdown/lua/pagebreak.lua",
-      "rmarkdown/rmarkdown/lua/latex-div.lua") |>
-    purrr::map(~ file.path(RLib, .x))
+  filters <- c(
+    "rmarkdown/lua/custom-environment.lua",
+    "rmarkdown/lua/pagebreak.lua",
+    "rmarkdown/lua/latex-div.lua"
+  )
+
+  # 在 rmarkdown 包安装目录中查找
+  paths <- sapply(filters, function(x) system.file(x, package = "rmarkdown"))
+
+  # 过滤掉找不到的路径
+  paths[paths != ""]
 }
 
-complete_config_info <- function(config, default) {
-    if (is.null(config)) return(default)
-    if (is.null(default)) return(config)
+# 准备元数据
+prepare_meta <- function(outformat, infile, config_path) {
+  # 默认配置
+  default_meta <- list(
+    infile = infile,
+    outfile = sub("\\.[^.]+$", paste0(".", outformat), infile),
+    render = "rmarkdown::render",
+    run_pandoc = FALSE,
+    opt = list(fig_caption = TRUE),
+    intermediates_dir = "./cache/draft",
+    output_dir = "./cache/draft"
+  )
 
-    stopifnot(is.null(names(config)) == is.null(names(default)))
-    if (is.null(names(config))) {
-        return(union(config, default))
+  # 读取 YAML 配置
+  full_config <- yaml::read_yaml(config_path)
+  if (!outformat %in% names(full_config)) {
+    warning(paste("Format", outformat, "not found in config file."))
+  }
+
+  config_meta <- full_config[[outformat]]
+
+  # 特殊处理：如果是 PDF/HTML 中间格式
+  if (outformat %in% c("pdf", "html", "beamer")) {
+    config_meta$outfile <- sub("\\.[^.]+$", ".knit.md", infile)
+  }
+
+  utils::modifyList(default_meta, config_meta)
+}
+
+# 导出 LaTeX 依赖 (knit_meta)
+write_knit_meta_file <- function(parse_res, output_dir) {
+  knit_meta <- attr(parse_res, 'knit_meta')
+  if (is.null(knit_meta) || length(knit_meta) == 0) {
+    return(NULL)
+  }
+
+  lines <- c()
+  for (item in knit_meta) {
+    if (inherits(item, 'latex_dependency')) {
+      pkg_line <- sprintf('\\usepackage{%s}', item[['name']])
+      if (!is.null(item[['options']])) {
+        # fmt: skip
+        pkg_line <- sprintf('\\usepackage[%s]{%s}', paste(item[['options']], collapse = ","), item[['name']])
+      }
+      lines <- c(lines, pkg_line, item[['extra_lines']])
+    }
+  }
+
+  if (length(lines) == 0) {
+    return(NULL)
+  }
+
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  outfile <- file.path(output_dir, "knit_meta")
+  writeLines(lines, outfile)
+  return(outfile)
+}
+
+# 执行渲染
+do_render <- function(meta) {
+  output_format_func <- rlang::parse_expr(meta$out)
+  output_format_obj <- rlang::exec(output_format_func, !!!meta$opt)
+
+  # 处理 .md 输入 (复制为 .Rmd)
+  infile <- meta$infile
+  temp_rmd <- NULL
+
+  if (grepl("\\.md$", infile, ignore.case = TRUE)) {
+    temp_rmd <- sub("\\.md$", ".Rmd", infile, ignore.case = TRUE)
+    if (file.exists(temp_rmd)) {
+      stop(paste(temp_rmd, "already exists, aborting safely."))
+    }
+    file.copy(infile, temp_rmd)
+    infile <- temp_rmd
+  }
+
+  # 确保清理临时 .Rmd
+  on.exit({
+    if (!is.null(temp_rmd) && file.exists(temp_rmd)) file.remove(temp_rmd)
+  })
+
+  render_func <- rlang::parse_expr(meta$render)
+
+  # 调用 Render
+  result_path <- rlang::exec(
+    render_func,
+    input = infile,
+    output_format = output_format_obj,
+    run_pandoc = meta$run_pandoc,
+    output_file = basename(meta$outfile), # 通常 render 只需要文件名
+    output_dir = meta$output_dir,
+    intermediates_dir = meta$intermediates_dir,
+    quiet = TRUE
+  )
+
+  return(result_path)
+}
+
+# ------------------------------------------------------------------------------
+# Main Logic
+# ------------------------------------------------------------------------------
+
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 3) {
+  stop("Usage: parse_rmd.R <format> <infile> <config_yaml> [output_yaml]")
+}
+
+outformat <- args[1]
+infile <- args[2]
+config_path <- args[3]
+result_file <- if (length(args) >= 4) args[4] else "rmd_meta.yaml"
+
+tryCatch(
+  {
+    # 1. 准备配置
+    meta <- prepare_meta(outformat, infile, config_path)
+
+    # 2. 执行渲染
+    render_res <- do_render(meta)
+
+    # 3. 处理路径修正 (Bookdown 特有)
+    if (!is.null(meta$superfluous_dir)) {
+      meta$output_dir <- file.path(meta$superfluous_dir, meta$output_dir)
     }
 
-    nms <- union(names(config), names(default))
-    names(nms) <- nms
-    lapply(nms, function(n) {
-        if (is.list(default[[n]]) | is.list(config[[n]])) {
-            complete_config_info(default[[n]], config[[n]])
-        } else {
-            if (is.null(config[[n]])) default[[n]] else config[[n]]
-        }
-    })
-}
-
-get_meta <- function(outformat, infile, yaml_file, ...) {
-    default_meta <- list(
-        infile            = infile,
-        outfile           = sub("\\.[Rr]?(md|markdown)$", paste0(".", outformat), infile),
-        render            = "rmarkdown::render",
-        run_pandoc        = FALSE,
-        opt               = list(fig_caption = TRUE),
-        intermediates_dir = "./cache/draft",
-        output_dir        = "./cache/draft"
-    )
-    config_meta <- yaml::read_yaml(yaml_file)[[outformat]]
-    if (outformat %in% c("pdf", "html", "beamer")) {
-        config_meta$outfile = sub("\\.[Rr]?(md|markdown)$", ".knit.md", infile)
-    }
-    complete_config_info(config_meta, default_meta)
-}
-
-write_knit_meta <- function(pares_res, intermediates_dir) {
-    knit_meta <- attr(parse_res, 'knit_meta')
-    if (length(knit_meta) == 0) return(NULL)
-
-    knit_meta <- purrr::map(knit_meta, ~ {
-        if (class(.x) == 'latex_dependency') {
-            c(gettextf('\\usepackage{%s}', .x[['name']]), .x[['extra_lines']])
-        } else {
-            NULL
-        }
-    })
-
-    outfile <- file.path(intermediates_dir, "knit_meta")
-    fileConn<-file(outfile)
-    writeLines(unlist(knit_meta), fileConn)
-    close(fileConn)
-
-    return(outfile)
-}
-
-knit <- function(meta) {
-    output_format <- rlang::exec(rlang::parse_expr(meta$out), !!!(meta$opt))
-    infile = meta$infile
-
-    if (grepl("\\.md$", infile, perl = TRUE)) {
-        tempfile = sub("\\.md$", ".Rmd", infile, perl = TRUE)
-        if (file.exists(tempfile)) {
-            stop(sprintf("%s exists!", tempfile))
-        }
-        file.copy(infile, tempfile, overwrite = TRUE)
-        meta$infile = tempfile
-        on.exit(file.remove(tempfile))
+    # 确定最终输出文件绝对路径
+    # render_res 通常返回的是最终文件的路径，如果是相对路径，结合 output_dir
+    if (!is_absolute_path(render_res)) {
+      meta$outfile <- file.path(meta$output_dir, basename(render_res))
+    } else {
+      meta$outfile <- render_res
     }
 
-    parse_res     <- rlang::exec(rlang::parse_expr(meta$render),
-                                input             = meta$infile,
-                                output_format     = output_format,
-                                run_pandoc        = meta$run_pandoc,
-                                output_file       = meta$outfile,
-                                output_dir        = meta$output_dir,
-                                intermediates_dir = meta$intermediates_dir,
-                                quiet             = FALSE)
+    # 4. 提取副作用 (Lua Filters, Dependencies)
+    meta$knit_meta <- write_knit_meta_file(render_res, meta$output_dir)
+    meta$lua_filters <- get_pandoc_lua_filter()
 
-    invisible(parse_res)
-}
+    # 5. 写回结果给 Perl
+    yaml::write_yaml(meta, result_file)
 
-args          <- parse_args()
-meta          <- do.call(get_meta, args)
-parse_res     <- knit(meta)
+    cat("[R] RMarkdown Render Success:", meta$outfile, "\n")
+  },
+  error = function(e) {
+    cat("[R Error]", conditionMessage(e), "\n")
+    quit(save = "no", status = 1)
+  }
+)
 
-if (!is.null(meta$superfluous_dir)) {
-    meta$output_dir <- file.path(meta$superfluous_dir, meta$output_dir)
-}
-meta$outfile <-
-  if (grepl("^/", parse_res)) {
-    parse_res
-  } else {
-    file.path(meta$output_dir, parse_res)
-}
-
-meta$knit_meta   <- write_knit_meta(parse_res, meta$output_dir)
-meta$lua_filters <- get_pandoc_lua_filter()
-
-if (is.null(args$result_file)) {
-    args$result_file <- file.path(meta$output_dir, "rmd_meta.yaml")
-}
-
-print(meta)
-yaml::write_yaml(meta, args$result_file)
-
-cat("Rmarkdown Parse Success\n\n")
 # END

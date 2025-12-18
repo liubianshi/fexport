@@ -1,111 +1,126 @@
+# ==============================================================================
+# 基础配置模板 (Anchors)
+# ==============================================================================
+.common_captions: &common_captions
+  tables:
+    caption:
+      pre: 表
+      sep: ' '
+  plots:
+    caption:
+      pre: 图
+      sep: ' '
+
+.common_pandoc_args: &common_pandoc_args
+  - -d2docx
+  - --lua-filter=rsbc.lua
+  - --filter=pandoc-crossref
+  - --lua-filter=rm-test-table-line.lua
+
+.tex_pandoc_args: &tex_pandoc_args
+  - -d2tex
+  - --filter=pandoc-crossref
+  - --lua-filter=rm-test-table-line.lua
+  - --citeproc
+  - --lua-filter=rsbc.lua
+
+# ==============================================================================
+# 具体格式配置
+# ==============================================================================
+
 pdf:
   render: rmarkdown::render
-  intermediates_dir: ./cache/draft
-  output_dir: .
   out: rmarkdown::pdf_document
   ext: pdf
+  intermediates_dir: ./cache/draft
+  output_dir: .
   opt:
-    pandoc_args:
-      - -d2tex
-      - --filter=pandoc-crossref
-      - --lua-filter=rm-test-table-line.lua
-      - --citeproc
-      - --lua-filter=rsbc.lua
+    pandoc_args: *tex_pandoc_args
+
 pdfbook:
   render: bookdown::render_book
   out: bookdown::pdf_document2
+  ext: pdf
   outfile: draft.knit.md
   intermediates_dir: _cache
   superfluous_dir: _bookdown_files
   output_dir: _cache
-  ext: pdf
+  !!merge <<: *common_captions
   opt:
     number_section: false
     keep_md: true
-    pandoc_args:
-      - -d2tex
-      - --filter=pandoc-crossref
-      - --lua-filter=rm-test-table-line.lua
-      - --citeproc
-      - --lua-filter=rsbc.lua
-    tables:
-      caption:
-        pre: 表
-        sep: '  '
-    plots:
-      caption:
-        pre: 图
-        sep: '  '
+    pandoc_args: *tex_pandoc_args
+
 rdocxbook:
   render: bookdown::render_book
   out: officedown::rdocx_document
-  outfile: draft.docx
-  output_dir: .
-  intermediates_dir: _cache
-  run_pandoc: true
   ext: docx
+  outfile: draft.docx
+  intermediates_dir: _cache
+  output_dir: .
+  run_pandoc: true
+  !!merge <<: *common_captions
   opt:
     base_format: bookdown::word_document2
     number_section: false
     keep_md: true
-    pandoc_args:
-      - -d2docx
-      - --lua-filter=rsbc.lua
-      - --filter=pandoc-crossref
-      - --lua-filter=rm-test-table-line.lua
-    tables:
-      caption:
-        pre: 表
-        sep: '  '
-    plots:
-      caption:
-        pre: 图
-        sep: '  '
+    pandoc_args: *common_pandoc_args
+
+docxbook:
+  render: bookdown::render_book
+  out: bookdown::word_document2
+  ext: docx
+  outfile: draft.docx
+  intermediates_dir: _cache
+  output_dir: .
+  run_pandoc: true
+  !!merge <<: *common_captions
+  opt:
+    number_section: false
+    keep_md: true
+    pandoc_args: *common_pandoc_args
+
 docx:
   render: rmarkdown::render
   out: officedown::rdocx_document
+  ext: docx
   intermediates_dir: .
   output_dir: .
-  ext: docx
   run_pandoc: true
+  !!merge <<: *common_captions
   opt:
     keep_md: true
-    pandoc_args:
-      - -d2docx
-      - --filter=pandoc-crossref
-      - --lua-filter=rm-test-table-line.lua
-      - --citeproc
-      - --lua-filter=rsbc.lua
-    tables:
-      caption:
-        pre: 表
-        sep: '  '
-    plots:
-      caption:
-        pre: 图
-        sep: '  '
-beamer:
-  out: rmarkdown::beamer_presentation
-  to: beamer
-  theme: Madrid
-  template: ~/useScript/beamerChinese.latex
-  fontthem: structurebold
-  ext: pdf
-  opt:
-    slide_level: 2
-html:
-  out: rmarkdown::html_document
-  ext: html
-htmlbook:
-  out: bookdown::html_document2
-  ext: html
+    pandoc_args: *common_pandoc_args
+
 pptx:
+  render: rmarkdown::render
   out: officedown::rpptx_document
+  to: pptx
+  ext: pptx
+  run_pandoc: true
   opt:
     base_format: rmarkdown::powerpoint_presentation
     toc: true
     toc_depth: 1
     slide_level: 2
-  run_pandoc: true
-  to: pptx
-  ext: pptx
+
+beamer:
+  render: rmarkdown::render
+  out: rmarkdown::beamer_presentation
+  to: beamer
+  ext: pdf
+  template: beamerChinese.latex
+  theme: Madrid
+  fontthem: structurebold
+  opt:
+    slide_level: 2
+
+html:
+  out: rmarkdown::html_document
+  ext: html
+  opt: []
+
+htmlbook:
+  out: bookdown::html_document2
+  ext: html
+  opt: []
