@@ -6,35 +6,53 @@ use warnings;
 use Exporter 'import';
 use YAML::XS qw(LoadFile);
 use Path::Tiny;
-use Hash::Merge;
-use Const::Fast;
 
 our @EXPORT_OK = qw(load_config merge_config process_params);
 
-# 实例化一个本地的 Merger 对象，避免污染全局 Hash::Merge 行为
-my $merger = Hash::Merge->new('RIGHT_PRECEDENT');
+use Fexport::Util qw(find_resource);
 
-# Global Defaults
-const my %DEFAULTS = (
-  to      => 'html',
-  from    => undef,    # Auto-detect
-  outfile => undef,
-  workdir => undef,
-  wd_mode => 'file',
-  outdir  => undef,
-  verbose => 0,
-  keep    => 0,
-  preview => 0,
-  lang    => 'zh',
-  pandoc  => {
-    cmd           => "pandoc +RTS -M512M -RTS",
-    markdown_fmt  => "markdown+emoji+east_asian_line_breaks+autolink_bare_uris",
-    markdown_exts => [qw(md markdown rmd rmarkdown qmd quarto)],
-    filters       =>
-      [ '--filter=pandoc-crossref', '--lua-filter=rm-test-table-line.lua', '--citeproc', '--lua-filter=rsbc.lua' ],
-    user_opts => "",
+# Load Global Defaults from YAML file
+sub _load_defaults {
+  my $defaults_file = find_resource("defaults.yaml");
+  return {} unless defined $defaults_file && -f $defaults_file;
+
+  my $raw = eval { LoadFile($defaults_file) };
+  if ($@) {
+    warn "[Warn] Failed to load defaults file: $@";
+    return {};
   }
-);
+
+  # Convert hyphenated keys to underscored keys recursively
+  return _convert_keys($raw);
+}
+
+sub _convert_keys {
+  my ($data) = @_;
+  return $data unless ref $data;
+
+  if ( ref $data eq 'HASH' ) {
+    my %converted;
+    for my $key ( keys %$data ) {
+      my $new_key = $key;
+      $new_key =~ s/-/_/g;    # user-opts -> user_opts
+      $converted{$new_key} = _convert_keys( $data->{$key} );
+    }
+    return \%converted;
+  }
+  elsif ( ref $data eq 'ARRAY' ) {
+    return [ map { _convert_keys($_) } @$data ];
+  }
+
+  return $data;
+}
+
+# Cache loaded defaults
+my $DEFAULTS;
+
+sub _get_defaults {
+  $DEFAULTS //= _load_defaults();
+  return $DEFAULTS;
+}
 
 sub load_config {
   my ($file) = @_;
@@ -48,18 +66,17 @@ sub load_config {
     warn "[Warn] Failed to load config file '$file': $@";
     return {};
   }
-  return $config;
+  return _convert_keys($config);
 }
 
 sub merge_config {
   my ( $file_config, $cli_opts ) = @_;
 
   # 链式合并：Defaults -> File -> CLI
-  # 使用实例化的 $merger 对象，保证行为一致且线程安全
-  my $merged = \%DEFAULTS;
+  my $merged = _get_defaults();
 
-  $merged = $merger->merge( $merged, $file_config ) if $file_config;
-  $merged = $merger->merge( $merged, $cli_opts )    if $cli_opts;
+  $merged = _recursive_merge( $merged, $file_config ) if $file_config;
+  $merged = _recursive_merge( $merged, $cli_opts )    if $cli_opts;
 
   return $merged;
 }
@@ -68,18 +85,25 @@ sub process_params {
   my ( $opts, $infile_raw, $current_pwd ) = @_;
 
   # 0. 初始化基础路径对象
-  my $cwd        = path( $current_pwd // '.' )->absolute;
-  my $infile_abs = defined $infile_raw ? $cwd->child($infile_raw) : undef;
+  my $cwd = path( $current_pwd // '.' )->absolute;
+
+  # Fix: use path()->absolute() because $cwd->child() concatenates even if argument is absolute path string
+  my $infile_abs = defined $infile_raw ? path($infile_raw)->absolute($cwd) : undef;
 
   # 1. 确定工作目录 (Effective Working Directory)
+  # 自动判断：如果输入文件是绝对路径，使用文件所在目录；如果是相对路径，使用当前目录
   my $work_dir;
+
   if ( $opts->{workdir} ) {
+    # 用户显式指定了工作目录
     $work_dir = $cwd->child( $opts->{workdir} );
   }
-  elsif ( $opts->{wd_mode} eq 'file' && $infile_abs ) {
+  elsif ( defined $infile_raw && path($infile_raw)->is_absolute ) {
+    # 输入文件是绝对路径 -> 使用文件所在目录
     $work_dir = $infile_abs->parent;
   }
   else {
+    # 输入文件是相对路径或未指定 -> 使用当前目录
     $work_dir = $cwd;
   }
 
@@ -87,26 +111,27 @@ sub process_params {
   my $resolved_infile = $infile_abs ? $infile_abs->relative($work_dir) : undef;
 
   # 3. 推断格式
-  $opts->{from} //= ( $resolved_infile && $resolved_infile->suffix ) || 'md';
+  $opts->{from} //= ( $resolved_infile && $resolved_infile =~ /\.([^.]+)$/ ? $1 : undef ) || 'md';
   $opts->{to}   //= "html";
 
   # 4. 确定最终输出文件路径 (修正后的逻辑)
   # 逻辑核心：如果存在 outdir，则 outfile 被视为基于 outdir 的相对路径
   my $abs_outfile;
 
+  # 场景 A: 显式指定 outdir
   if ( defined $opts->{outdir} ) {
-
-    # 场景 A: 显式指定 outdir
     my $base_out = $cwd->child( $opts->{outdir} );
 
     if ( defined $opts->{outfile} ) {
-
-      # 修正: 使用 basename 避免路径嵌套或绝对路径冲突，保持与旧版本行为一致 (reprenting)
-      $abs_outfile = $base_out->child( path( $opts->{outfile} )->basename );
+      my $outfile_path = path( $opts->{outfile} );
+      if ( $outfile_path->is_absolute ) {
+        $abs_outfile = $outfile_path;
+      }
+      else {
+        $abs_outfile = $base_out->child( $outfile_path->basename );
+      }
     }
     elsif ($resolved_infile) {
-
-      # 自动生成：取文件名(去掉后缀) + 新后缀
       my $name = $resolved_infile->basename(qr/\.[^.]+$/) . '.' . $opts->{to};
       $abs_outfile = $base_out->child($name);
     }
@@ -114,14 +139,21 @@ sub process_params {
       $abs_outfile = $base_out->child( "output." . $opts->{to} );
     }
   }
-  elsif ( defined $opts->{outfile} ) {
 
-    # 场景 B: 无 outdir，仅有 outfile
-    # 用户提供的 outfile 相对于 cwd.
-    $abs_outfile = $cwd->child( $opts->{outfile} );
+  # 场景 B: 未指定 outdir, 但指定了 outfile
+  elsif ( defined $opts->{outfile} ) {
+    my $outfile_path = path( $opts->{outfile} );
+    if ( $outfile_path->is_absolute ) {
+      $abs_outfile = $outfile_path;
+    }
+    else {
+      # 用户提供的 outfile 相对于 cwd.
+      $abs_outfile = $cwd->child( $opts->{outfile} );
+    }
   }
+
+  # 场景 C: 默认输出到 work_dir
   else {
-    # 场景 C: 默认输出到 work_dir
     my $base_out = $work_dir;
     my $name =
         $resolved_infile
@@ -135,6 +167,26 @@ sub process_params {
 
   # 返回字符串路径 (显式 stringify 避免对象泄露给不识别 Path::Tiny 的旧代码)
   return ( "$work_dir", "$resolved_infile", "$rel_outfile" );
+}
+
+# Removed Hash::Merge dependency due to global state issues.
+# Implementing simple recursive merge (Right replace arrays/scalars, Merge hashes)
+sub _recursive_merge {
+  my ( $left, $right ) = @_;
+  return $right unless defined $left;
+  return $left  unless defined $right;
+
+  if ( ref($left) eq 'HASH' && ref($right) eq 'HASH' ) {
+    my %merged = %$left;
+    for my $key ( keys %$right ) {
+      my $l_val = ( exists $left->{$key} ) ? $left->{$key} : undef;
+      $merged{$key} = _recursive_merge( $l_val, $right->{$key} );
+    }
+    return \%merged;
+  }
+
+  # For arrays and scalars, Right wins (Replacement)
+  return $right;
 }
 
 1;

@@ -26,6 +26,8 @@ our @EXPORT_OK = qw(
 
 sub postprocess_docx {
   my $docx_path = shift;
+  # Archive::Zip requires a string path, not a Path::Tiny object
+  $docx_path = "$docx_path";
 
   unless ( -e $docx_path ) {
     warn "[Warn] Docx file not found: $docx_path\n";
@@ -161,7 +163,7 @@ sub postprocess_html {
   );
 
   # 更新内容引用
-  @$content_ref = ( $dom->toString );
+  @$content_ref = ( $dom->to_string );
 }
 
 # ==============================================================================

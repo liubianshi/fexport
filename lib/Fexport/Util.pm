@@ -7,10 +7,15 @@ use utf8;
 use Exporter 'import';
 
 # 核心依赖
+# 核心依赖
 use IPC::Run3 qw(run3);
 use Path::Tiny;
 use File::ShareDir qw(dist_file);
 use FindBin        qw($RealBin);
+use Digest::MD5 qw(md5_hex);
+use File::Spec;
+use POSIX         qw(setsid);
+use IPC::Cmd      qw(can_run);
 
 # 导出函数名更新
 our @EXPORT_OK = qw(
@@ -20,31 +25,43 @@ our @EXPORT_OK = qw(
   find_pandoc_datadir
   get_pandoc_defaults_flag
   find_resource
+  launch_browser_preview
+  stop_browser_preview
+  run3
 );
 
 # ==============================================================================
 # 1. Pandoc 执行相关
 # ==============================================================================
 
-# 作用: 将内容写入 Pandoc 的 STDIN 并执行，输出结果依赖 $cmd_ref 中的 -o 参数
+use Encode qw(encode_utf8); # Ensure Encode is used
+
+# ...
+
+# 作用: 将内容写入 Pandoc 的 STDIN 并执行
 sub run_pandoc {
   my ( $content_lines_ref, $cmd_ref, $log_fh ) = @_;
 
-  # 1. 记录日志 (调试用)
+  # 1. 记录日志 (调试用) - Log is opened as :raw, so must encode text
   if ($log_fh) {
-    say {$log_fh} join( " ", @$cmd_ref );
+    # Encode command string to bytes
+    my $cmd_str = join( " ", @$cmd_ref );
+    say {$log_fh} encode_utf8($cmd_str);
   }
 
   # 2. 准备输入数据
-  # 将数组行合并为单个字符串，供 STDIN 使用
-  my $stdin_data = join( "", @$content_lines_ref );
-
+  # 将数组行(字符)合并并编码为 UTF-8 字节流，供 Pandoc STDIN 使用
+  my $stdin_data = encode_utf8( join( "", @$content_lines_ref ) );
+  
   # 3. 安全执行命令 (IPC::Run3)
-  # \@$cmd_ref   : 避免 Shell 注入
-  # \$stdin_data : 写入 STDIN
-  # \undef       : 忽略 STDOUT (因为通常 Pandoc 通过 --output 写文件)
-  # $log_fh      : 捕获 STDERR
-  run3 $cmd_ref, \$stdin_data, \undef, $log_fh;
+  # 捕获 STDERR 到 scalar (字节)，然后手动写入 log，避免 IPC::Run3 直接写 handle 可能的 warn
+  my $stderr_bytes;
+  
+  run3 $cmd_ref, \$stdin_data, \undef, \$stderr_bytes;
+  
+  if ($log_fh && defined $stderr_bytes) {
+      print {$log_fh} $stderr_bytes;
+  }
 
   # 4. 错误检查
   if ( $? != 0 ) {
@@ -122,10 +139,10 @@ sub get_pandoc_defaults_flag {
   my $format = shift;
 
   my $datadir = find_pandoc_datadir();
-  return "" unless $datadir;
+  return unless $datadir;
 
   my $defaults_dir = path($datadir)->child("defaults");
-  return "" unless $defaults_dir->is_dir;
+  return unless $defaults_dir->is_dir;
 
   # 1. 检查 Mac 特有配置 (优先)
   if ( $^O eq 'darwin' ) {
@@ -139,7 +156,7 @@ sub get_pandoc_defaults_flag {
     return "-d2$format";
   }
 
-  return "";
+  return;
 }
 
 # 作用: 在开发目录、ShareDir、脚本同级目录查找文件
@@ -162,6 +179,161 @@ sub find_resource {
 
   warn "Warning: Resource file '$filename' not found in share directory or local path.\n";
   return undef;
+}
+
+# ==============================================================================
+# 4. Preview / Browser Sync
+# ==============================================================================
+
+sub launch_browser_preview {
+  my ($target_file, $browser) = @_;
+
+  # 1. 检查是否安装了 browser-sync
+  unless ( can_run('browser-sync') ) {
+    warn "[Warn] 'browser-sync' not found. Skipping live preview.\n";
+    return;
+  }
+
+  my $file_obj   = path($target_file)->realpath;  # Normalize path (removes ../ etc)
+  my $server_dir = $file_obj->parent;
+
+  # 2. 计算 PID 文件位置 (存放于系统临时目录)
+  # 算法：系统Temp目录 / fexport-state / <项目路径的MD5>.pid
+  my $dir_hash  = md5_hex( $server_dir->stringify );
+  my $sys_tmp   = path( File::Spec->tmpdir );
+  my $state_dir = $sys_tmp->child("fexport-state");
+  $state_dir->mkpath;
+  my $pid_file = $state_dir->child("preview-$dir_hash.pid");
+
+  # 3. 检查是否已经在运行 (PID 检查逻辑)
+  if ( $pid_file->exists ) {
+    my $pid = $pid_file->slurp;
+    chomp $pid;
+
+    if ( $pid && kill( 0, $pid ) ) {
+      say "[Preview] Browser-sync is already running (PID: $pid).";
+      say "[Preview] Browser should auto-refresh shortly.";
+      return;
+    }
+    else {
+      $pid_file->remove;
+    }
+  }
+
+  # 4. 启动新的后台进程
+  say "[Preview] Starting browser-sync in background...";
+
+  my $pid = fork();
+  if ( !defined $pid ) {
+    warn "Failed to fork: $!";
+    return;
+  }
+
+  if ( $pid == 0 ) {
+    # === 子进程 (Child) ===
+    setsid() or die "Can't start a new session: $!";
+    
+    # Log file for debugging browser-sync issues
+    my $log_file = $state_dir->child("preview-$dir_hash.log");
+    
+    open STDIN,  '<', '/dev/null';
+    open STDOUT, '>>', $log_file->stringify;
+    open STDERR, '>&', \*STDOUT;
+
+    my $index_file = $file_obj->basename;
+    my $watch_pattern = $server_dir->child("*.html")->stringify;  # Absolute path pattern
+    my @cmd        = (
+      'browser-sync', 'start',
+      '--server',     $server_dir->stringify,
+      '--index',      $index_file,
+      '--files',      $watch_pattern,
+      '--no-open',    # Don't open browser from daemon (it can't access display)
+      '--no-notify',
+      '--no-ui',
+      '--port', '3000'
+    );
+
+    exec(@cmd) or die "Failed to exec browser-sync: $!";
+  }
+
+  # === 父进程 (Parent) ===
+  $pid_file->spew($pid);
+
+  say "[Preview] Server started with PID $pid.";
+  say "[Preview] Serving from: $server_dir";
+  say "[Preview] To stop it manually: fexport --stop-preview";
+  
+  # Wait a moment for server to start, then open browser from parent (has display access)
+  sleep 1;
+  my $url = "http://localhost:3000";
+  
+  # Fork to open browser in background so script can exit immediately
+  my $browser_pid = fork();
+  if ( defined $browser_pid && $browser_pid == 0 ) {
+    # Child process - open browser and exit
+    if ( $browser ) {
+      exec($browser, $url);
+    }
+    elsif ( $^O eq 'darwin' ) {
+      exec('open', $url);
+    }
+    elsif ( $^O eq 'linux' ) {
+      exec('xdg-open', $url);
+    }
+    elsif ( $^O eq 'MSWin32' ) {
+      exec('start', $url);
+    }
+    exit 0;
+  }
+  # Parent continues and exits
+}
+
+sub stop_browser_preview {
+  my $sys_tmp   = path( File::Spec->tmpdir );
+  my $state_dir = $sys_tmp->child("fexport-state");
+  
+  unless ( $state_dir->is_dir ) {
+    say "[Preview] No preview servers are running.";
+    return;
+  }
+  
+  my @pid_files = $state_dir->children( qr/^preview-.*\.pid$/ );
+  
+  if ( @pid_files == 0 ) {
+    say "[Preview] No preview servers are running.";
+    return;
+  }
+  
+  my $stopped = 0;
+  for my $pid_file (@pid_files) {
+    my $pid = $pid_file->slurp;
+    chomp $pid;
+    
+    if ( $pid && kill( 0, $pid ) ) {
+      # Process exists, kill it
+      if ( kill( 'TERM', $pid ) ) {
+        say "[Preview] Stopped browser-sync (PID: $pid).";
+        $stopped++;
+      }
+      else {
+        warn "[Preview] Failed to stop PID $pid: $!\n";
+      }
+    }
+    # Remove PID file regardless
+    $pid_file->remove;
+  }
+  
+  # Also clean up log files
+  for my $log_file ( $state_dir->children( qr/^preview-.*\.log$/ ) ) {
+    $log_file->remove;
+  }
+  
+  if ( $stopped == 0 ) {
+    say "[Preview] No active preview servers found.";
+  }
+  else {
+    say "[Preview] Stopped $stopped preview server(s).";
+  }
 }
 
 1;

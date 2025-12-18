@@ -17,7 +17,7 @@ use List::Util   qw(uniq);
 use POSIX        qw(setsid);
 use IPC::Cmd     qw(can_run);
 
-use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir);
+use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 
 our @EXPORT_OK = qw(render_qmd);
@@ -26,7 +26,7 @@ our @EXPORT_OK = qw(render_qmd);
 my $PANDOC_DIR = path( find_pandoc_datadir() );
 
 sub render_qmd {
-  my ( $infile_raw, $outformat, $outfile_final, $lang, $preview, $verbose, $keep_intermediates, $outfile_abs_path ) =
+  my ( $infile_raw, $outformat, $outfile_final, $lang, $preview, $verbose, $keep_intermediates, $outfile_abs_path, $browser ) =
     @_;
 
   # 1. 路径对象化
@@ -128,7 +128,7 @@ sub render_qmd {
 
   # 6. 后处理与移动 (Post-process & Move)
   if ( $outformat eq "html" ) {
-    _process_html_output( $local_outfile, $preview, $final_dest );
+    _process_html_output( $local_outfile, $preview, $final_dest, $browser );
 
     # HTML 处理完后，如果 local_outfile 和 final_dest 不一样，清理 local
     $local_outfile->remove if $local_outfile->absolute ne $final_dest->absolute;
@@ -154,7 +154,7 @@ sub render_qmd {
 # --- Helpers ---
 
 sub _process_html_output {
-  my ( $infile, $preview, $outfile_dest ) = @_;
+  my ( $infile, $preview, $outfile_dest, $browser ) = @_;
 
   # 模拟原来的数组引用接口
   my @lines = $infile->lines_utf8();
@@ -165,91 +165,7 @@ sub _process_html_output {
   # 写入最终位置
   path($outfile_dest)->spew_utf8(@lines);
 
-  _launch_browser_preview($outfile_dest) if $preview;
-}
-
-sub _launch_browser_preview {
-  my ($target_file) = @_;
-
-  # 1. 检查是否安装了 browser-sync
-  unless ( can_run('browser-sync') ) {
-    warn "[Warn] 'browser-sync' not found. Skipping live preview.\n";
-    return;
-  }
-
-  my $file_obj   = path($target_file);
-  my $server_dir = $file_obj->parent->absolute;
-
-  # 2. 计算 PID 文件位置 (存放于系统临时目录)
-  # 算法：系统Temp目录 / fexport-state / <项目路径的MD5>.pid
-  # 这样每个项目目录都有唯一的 PID 文件，互不冲突，且不污染源码目录。
-  my $dir_hash  = md5_hex( $server_dir->stringify );
-  my $sys_tmp   = path( File::Spec->tmpdir );          # Linux通常是 /tmp, Windows是 %TEMP%
-  my $state_dir = $sys_tmp->child("fexport-state");
-  $state_dir->mkpath;
-  my $pid_file = $state_dir->child("preview-$dir_hash.pid");
-
-  # 3. 检查是否已经在运行 (PID 检查逻辑)
-  if ( $pid_file->exists ) {
-    my $pid = $pid_file->slurp;
-    chomp $pid;
-
-    # 使用 kill 0 检查进程是否存在且有权限操作 (不发送实际信号)
-    if ( $pid && kill( 0, $pid ) ) {
-      say "[Preview] Browser-sync is already running (PID: $pid).";
-      say "[Preview] Browser should auto-refresh shortly.";
-      return;    # 直接返回，主程序随后会退出
-    }
-    else {
-      # PID 文件存在但进程不在了 (Stale lock)，清理掉
-      $pid_file->remove;
-    }
-  }
-
-  # 4. 启动新的后台进程
-  say "[Preview] Starting browser-sync in background...";
-
-  my $pid = fork();
-  if ( !defined $pid ) {
-    warn "Failed to fork: $!";
-    return;
-  }
-
-  if ( $pid == 0 ) {
-
-    # === 子进程 (Child) ===
-
-    # A. 创建新的会话，脱离控制终端
-    setsid() or die "Can't start a new session: $!";
-
-    # B. 重定向输入输出，防止阻塞父进程或干扰终端
-    open STDIN,  '<', '/dev/null';
-    open STDOUT, '>', '/dev/null';    # 或者重定向到日志文件
-    open STDERR, '>', '/dev/null';
-
-    # C. 准备命令
-    my $index_file = $file_obj->basename;
-    my @cmd        = (
-      'browser-sync', 'start',
-      '--server',     $server_dir->stringify,
-      '--index',      $index_file,
-      '--files',      $target_file,             # 监听特定文件
-      '--no-notify',                            # 不显示右上角弹窗
-      '--ui',   'false',                        # 不启动 UI 控制面板
-      '--port', '3000'                          # 尽量固定端口，避免多开混乱
-    );
-
-    # D. 执行命令 (exec 会替换当前子进程内存，PID 保持不变)
-    exec(@cmd) or die "Failed to exec browser-sync: $!";
-  }
-
-  # === 父进程 (Parent) ===
-
-  # 4. 记录 PID 到文件，以便下次检查
-  $pid_file->spew($pid);
-
-  say "[Preview] Server started with PID $pid.";
-  say "[Preview] To stop it manually: kill $pid";
+  launch_browser_preview($outfile_dest, $browser) if $preview;
 }
 
 sub _process_pdf_output {

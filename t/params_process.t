@@ -18,13 +18,14 @@ sub canon {
     return path(shift)->absolute->stringify;
 }
 
-subtest 'Defaults (wd_mode=file)' => sub {
-    my $infile = "doc/input.md";
-    my $opts = { wd_mode => 'file', workdir => undef, outdir => undef, outfile => undef, to => 'html' };
-    
-    # Create dummy input
+subtest 'Absolute path -> workdir is parent dir' => sub {
+    # Create the file first
     $temp_dir->child('doc')->mkpath;
     $temp_dir->child('doc/input.md')->touch;
+    
+    # Use ABSOLUTE path - should use file's parent as workdir
+    my $infile = $temp_dir->child('doc/input.md')->absolute->stringify;
+    my $opts = { workdir => undef, outdir => undef, outfile => undef, to => 'html' };
     
     my ($wd, $in, $out) = process_params($opts, $infile, $cwd);
     
@@ -36,10 +37,10 @@ subtest 'Defaults (wd_mode=file)' => sub {
     is($out, 'input.html', "Outfile is relative default in workdir");
 };
 
-subtest 'Outdir + Outfile (Reparenting)' => sub {
+subtest 'Relative path -> workdir is current dir' => sub {
+    # Use RELATIVE path - should use current dir as workdir
     my $infile = "input.md";
     my $opts = { 
-        wd_mode => 'current', # Stay in root
         outdir => 'dist', 
         outfile => 'sub/output.html', 
         to => 'html' 
@@ -55,26 +56,25 @@ subtest 'Outdir + Outfile (Reparenting)' => sub {
     is($out, 'dist/output.html', "Outfile re-parented to outdir (flattened)");
 };
 
-subtest 'Absolute Outfile (should be respected?)' => sub {
-    # If outdir is NOT set, and outfile is absolute.
+subtest 'Absolute Outfile' => sub {
+    # Relative infile, absolute outfile
     my $infile = "input.md";
     my $abs_out = $temp_dir->child('custom/out.html')->absolute->stringify;
     
     my $opts = { 
-        wd_mode => 'file', 
         outfile => $abs_out,
         to => 'html'
     };
     
     my ($wd, $in, $out) = process_params($opts, $infile, $cwd);
     
-    # wd is cwd (infile in root)
+    # wd is cwd (infile is relative)
     is(canon($wd), canon($cwd), "Workdir is current");
     
     # out should be relative to wd
-    # $abs_out relative to $cwd
     my $expected = path($abs_out)->relative($cwd)->stringify;
     is($out, $expected, "Absolute outfile converted to relative to workdir");
 };
 
 done_testing();
+

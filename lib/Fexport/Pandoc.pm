@@ -18,7 +18,9 @@ sub build_cmd {
 
   # 如果 config 中定义了 markdown_exts 且当前格式在其中，则使用配置的 markdown_fmt
   if ( defined $config->{markdown_exts} && any { $_ eq $from } @{ $config->{markdown_exts} } ) {
-    $input_fmt = $config->{markdown_fmt};
+    my $fmt = $config->{markdown_fmt};
+    # Support both string and array format
+    $input_fmt = ref($fmt) eq 'ARRAY' ? join('+', @$fmt) : $fmt;
   }
 
   # 2. 解析基础命令 (e.g. "pandoc +RTS -M512M")
@@ -27,9 +29,13 @@ sub build_cmd {
   my @base_cmd = shellwords( $config->{cmd} // 'pandoc' );
 
   # 3. 解析额外选项 (String -> List)
-  # 这一步至关重要：它能正确处理带引号的选项，如 --variable title="Hello World"
-  my @config_opts = shellwords( $config->{user_opts} // '' );
-  my @cli_opts    = shellwords( $params->{user_opts} // '' );
+  # Support both string and array format for user_opts
+  my @config_opts = ref($config->{user_opts}) eq 'ARRAY' 
+    ? @{$config->{user_opts}} 
+    : shellwords( $config->{user_opts} // '' );
+  my @cli_opts = ref($params->{user_opts}) eq 'ARRAY'
+    ? @{$params->{user_opts}}
+    : shellwords( $params->{user_opts} // '' );
 
   # 4. 构建最终命令列表
   # 注意：在列表上下文中，绝对不要手动给参数加引号（如 "--from=\"$fmt\"" 是错误的）

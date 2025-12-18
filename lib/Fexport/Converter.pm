@@ -7,7 +7,7 @@ use Exporter 'import';
 use Path::Tiny;
 use List::Util qw(first);
 
-use Fexport::Util qw(run_pandoc_and_load run_pandoc save_lines get_pandoc_defaults_flag);
+use Fexport::Util qw(run_pandoc_and_load run_pandoc save_lines get_pandoc_defaults_flag launch_browser_preview run3);
 use Fexport::PostProcess
   qw(fix_citation_etal postprocess_html sanitize_markdown_math postprocess_latex postprocess_docx);
 
@@ -42,7 +42,8 @@ sub _to_html {
   postprocess_html( \@html_contents );
   save_lines( \@html_contents, $outfile );
 
-  _preview_file($outfile) if $args->{preview};
+  # Unified preview logic: use browser-sync for HTML
+  launch_browser_preview($outfile, $args->{browser}) if $args->{preview};
 }
 
 sub _to_docx {
@@ -88,13 +89,19 @@ sub _to_pdf {
   save_lines( \@tex_contents, $tex_file );
 
   # 4. 运行 latexmk
-  # 使用列表形式 system，安全且无需手动 quote 文件名
+  # 使用 run3 替代 system，便于测试 mock 和捕获输出
   my @latexmk_cmd =
     ( 'latexmk', '-xelatex', '-outdir=' . $temp_dir->stringify, $verbose ? () : '-quiet', $tex_file->stringify );
 
-  # 捕获输出或直接运行
-  my $ret = system(@latexmk_cmd);
-
+  my $out;
+  my $err;
+  eval {
+      run3 \@latexmk_cmd, \undef, \$out, \$err;
+  };
+  if ($@) {
+      warn "Run3 failed: $@";
+  }
+  my $ret = $?; # run3 updates $?
   if ( $ret == 0 ) {
 
     # 5. 移动生成的 PDF 到最终位置

@@ -1,0 +1,36 @@
+# fexport default configuration
+# This file contains the default settings for fexport
+
+to: html
+from: ~              # Auto-detect
+outfile: ~
+workdir: ~
+outdir: ~
+verbose: 0
+keep: 0
+preview: 0
+lang: zh
+
+pandoc:
+  cmd: "pandoc +RTS -M512M -RTS"
+  markdown-fmt:
+    - markdown
+    - emoji
+    - east_asian_line_breaks
+    - autolink_bare_uris
+    - mark
+    - lists_without_preceding_blankline
+    - wikilinks_title_before_pipe
+  markdown-exts:
+    - md
+    - markdown
+    - rmd
+    - rmarkdown
+    - qmd
+    - quarto
+  filters:
+    - "--filter=pandoc-crossref"
+    - "--lua-filter=rm-test-table-line.lua"
+    - "--citeproc"
+    - "--lua-filter=rsbc.lua"
+  user-opts: []

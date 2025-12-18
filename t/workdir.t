@@ -26,11 +26,6 @@ open my $fh, '>', $md_file or die $!;
 print $fh "# Hello\n";
 close $fh;
 
-# Test 1: Default (wd_mode=file) - Output should appear in subdir by default if not specified? 
-# OR check stdout for "Output: /path/to/subdir/test.html" logic.
-# The script prints the output file path at the end.
-# If wd_mode=file, input path logic might change.
-
 sub run_fexport {
     my ($args) = @_;
     my $cmd = "$cmd_base $args 2>&1";
@@ -38,51 +33,42 @@ sub run_fexport {
     return $out;
 }
 
-# Case A: wd_mode=current (explicit). Working dir should stay as Cwd (temp_dir parent usually or wherever we run from).
-# If we run from $cwd, and input is relative "subdir/test.md" (if we were in temp_dir).
-# Let's adjust Cwd to temp_dir for testing.
-chdir $temp_dir;
-
-# Case 1: Default (file). Input: subdir/test.md
-# Expectation: Scripts chdirs to subdir. Output should be in subdir (since no outdir specified and outfile defaults to input location logic).
-# Wait, if script chdirs to subdir, effectively output is ./test.html relative to new pwd, which is subdir/test.html relative to start.
+# Test 1: Absolute path - output should appear in file's directory (subdir)
+# When input is absolute path, workdir = file's parent directory
 {
-    my $out = run_fexport("--wd-mode file subdir/test.md");
-    if (!-e File::Spec->catfile($subdir, 'test.html')) {
+    my $abs_md_file = File::Spec->rel2abs($md_file);
+    my $out = run_fexport("$abs_md_file");
+    my $expected_output = File::Spec->catfile($subdir, 'test.html');
+    
+    if (!-e $expected_output) {
         diag("Output not found in subdir. Command output:\n$out");
-        if (-e File::Spec->catfile($temp_dir, 'test.html')) {
-            diag("BUT found in temp_dir/test.html");
-        }
     }
-    ok(-e File::Spec->catfile($subdir, 'test.html'), "wd_mode=file: Output generated in subdir");
+    ok(-e $expected_output, "Absolute path: Output generated in file's directory");
+    unlink $expected_output if -e $expected_output;
 }
 
-# Case 2: wd_mode=current. Input: subdir/test.md
-# Expectation: Script stays in current dir. Output defaults to where?
-# Logic: $out_dir = $opts{outdir} // (defined $opts{outfile} ? dirname($opts{outfile}) : $current_pwd);
-# If outfile not defined: out_basename is test.html. 
-# out_dir defaults to current_pwd (if outfile not defined).
-# So output should be in current dir ($temp_dir), NOT subdir.
-# WAIT, original code: 
-# my $out_dir = $opts{outdir} // (defined $opts{outfile} ? dirname($opts{outfile}) : $current_pwd);
-# If outfile undefined, out_dir = current_pwd.
-# So test.html is created in current dir.
+# Test 2: Relative path - output should appear in current directory
+# When input is relative path, workdir = current directory
+chdir $temp_dir;
 {
-    my $out = run_fexport("--wd-mode current subdir/test.md");
-    if (!-e File::Spec->catfile($temp_dir, 'test.html')) {
+    my $out = run_fexport("subdir/test.md");
+    my $expected_output = File::Spec->catfile($temp_dir, 'test.html');
+    
+    if (!-e $expected_output) {
         diag("Output not found in temp_dir. Command output:\n$out");
         if (-e File::Spec->catfile($subdir, 'test.html')) {
              diag("BUT found in subdir/test.html");
         }
     }
-    ok(-e File::Spec->catfile($temp_dir, 'test.html'), "wd_mode=current: Output generated in current dir");
-    ok(!-e File::Spec->catfile($subdir, 'test.html.old'), "Sanity check"); 
-    # (Note: previous test created subdir/test.html, cleanup or ignore)
-    unlink File::Spec->catfile($subdir, 'test.html');
-    unlink File::Spec->catfile($temp_dir, 'test.html');
+    ok(-e $expected_output, "Relative path: Output generated in current dir");
+    unlink $expected_output if -e $expected_output;
 }
+
+# Test 3: Sanity check
+ok(1, "Sanity check");
 
 # Clean
 chdir $cwd;
 
 done_testing();
+

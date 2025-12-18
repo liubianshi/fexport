@@ -15,7 +15,7 @@ use Cwd          qw(getcwd);
 # --- Fexport Modules ---
 # 引入 Config 模块中的核心函数
 use Fexport::Config      qw(load_config merge_config process_params);
-use Fexport::Util        qw(run_pandoc save_lines);
+use Fexport::Util        qw(run_pandoc save_lines stop_browser_preview);
 use Fexport::PostProcess qw(postprocess_docx postprocess_html postprocess_latex);
 use Fexport::Rmd         qw(render_rmd);
 use Fexport::Quarto      qw(render_qmd);
@@ -38,17 +38,24 @@ GetOptions(
   'from|f=s'    => \$cli{from},
   'outfile|o=s' => \$cli{outfile},
   'workdir=s'   => \$cli{workdir},
-  'wd-mode=s'   => \$cli{wd_mode},           # 支持 file/cwd 模式
   'outdir|d=s'  => \$cli{outdir},
   'verbose|v'   => \$cli{verbose},
   'pandoc|p=s'  => \$cli{pandoc_opts},
   'config|c=s'  => \$cli{config},
   'keep|k'      => \$cli{keep},
   'preview'     => \$cli{preview},
+  'stop-preview' => \$cli{stop_preview},
+  'browser=s'   => \$cli{browser},
   'lang=s'      => \$cli{lang},
   'help|h'      => sub { help(); exit 0 },
   )
   or die "Error parsing arguments. Use --help for usage.\n";
+
+# Handle --stop-preview immediately and exit
+if ( $cli{stop_preview} ) {
+  stop_browser_preview();
+  exit 0;
+}
 
 # A. 加载与合并配置
 # 逻辑移交: Fexport::Config::merge_config 处理了 Defaults -> ConfigFile -> CLI 的优先级
@@ -57,6 +64,10 @@ my $opts        = merge_config( $file_config, \%cli );
 
 # B. 路径解析与参数推断
 # 逻辑移交: Fexport::Config::process_params 处理了所有复杂的路径计算、格式推断
+if ( @ARGV > 1 ) {
+  die "Error: Too many arguments (" . join(", ", @ARGV) . "). Only one input file is allowed.\n"
+    . "Hint: Did you use a single dash for a long option (e.g. '-to' instead of '--to')?\n";
+}
 my $infile_raw = $ARGV[0];
 my $cwd_raw    = getcwd();
 
@@ -170,7 +181,8 @@ elsif ( $opts->{from} =~ /^(qmd|quarto)$/ ) {
     $opts->{preview},
     $opts->{verbose},
     $opts->{keep},
-    $outfile     # Quarto 模块 API 需要确认是否还需要这个参数
+    $outfile,    # Quarto 模块 API 需要确认是否还需要这个参数
+    $opts->{browser}
   );
   $is_external_done = 1;
 }
@@ -204,6 +216,7 @@ else {
       verbose     => $opts->{verbose},
       keep        => $opts->{keep},
       preview     => $opts->{preview},      # Browser-Sync 预览
+      browser     => $opts->{browser},      # 指定浏览器
       lang        => $opts->{lang}
     }
   );
@@ -224,8 +237,20 @@ unless ( $opts->{keep} ) {
   path($_)->remove for @temp_files;
 }
 
-# 输出最终结果路径 (如果是绝对路径，打印出来方便用户点击)
-say "\nExported: " . $outfile;
+# 输出最终结果路径
+# outfile 是相对于 workdir 的，我们需要将其还原为相对于初始执行目录($cwd_raw)的路径
+my $final_out = $outfile->is_absolute 
+    ? $outfile 
+    : $workdir->child($outfile);
+
+# 使用 realpath 解析符号链接和 .. (注意: realpath 需要文件存在，这里已经生成了，所以没问题)
+# 如果文件不存在( dry run?), 则 fallback 到 stringify
+my $clean_path = $final_out->exists ? $final_out->realpath : $final_out->absolute;
+
+# 转为相对于原始 CWD 的路径
+my $display_out = $clean_path->relative($cwd_raw);
+
+say "\nExported: " . $display_out;
 
 exit 0;
 
@@ -233,61 +258,236 @@ sub help {
   require Pod::Usage;
   Pod::Usage::pod2usage( -verbose => 2 );
 }
-
 __END__
 
 =head1 NAME
 
-fexport - A wrapper tool to convert RMarkdown, Quarto, and Markdown to various formats.
+fexport - 文档转换工具，支持 Markdown、RMarkdown、Quarto 转换为多种格式
 
 =head1 SYNOPSIS
 
-fexport [options] [file]
+    fexport [选项] [输入文件]
+    
+    # 基本用法
+    fexport input.md                      # 转换为 HTML (默认)
+    fexport -t pdf input.md               # 转换为 PDF
+    fexport -t docx -o report.docx doc.md # 转换为 Word 文档
+    
+    # 预览功能
+    fexport --preview -t html input.md    # 转换并启动实时预览
+    fexport --stop-preview                # 停止所有预览服务器
+    
+    # 输出目录控制
+    fexport -t pdf -d ./output input.md   # 输出到指定目录
+    
+    # 高级用法
+    fexport -t pdf -c myconfig.yaml -v input.md  # 使用配置文件并显示详细信息
+
+=head1 DESCRIPTION
+
+fexport 是一个文档转换工具，基于 Pandoc 实现，支持将 Markdown、RMarkdown 和 
+Quarto 文档转换为 HTML、PDF、Word 等多种格式。
+
+主要特性：
+
+=over 4
+
+=item * B<格式自动检测>: 根据文件扩展名自动识别输入格式
+
+=item * B<实时预览>: 使用 browser-sync 实现 HTML 文档的实时预览和自动刷新
+
+=item * B<配置灵活>: 支持 YAML 配置文件和命令行选项
+
+=item * B<智能路径处理>: 绝对路径使用文件目录，相对路径使用当前目录
+
+=back
 
 =head1 OPTIONS
 
+=head2 基本选项
+
 =over 8
 
-=item B<--to, -t>
+=item B<--to, -t> I<FORMAT>
 
-Specify output format (html, pdf, docx, etc.). Default is html.
+指定输出格式。支持的格式包括：
 
-=item B<--from, -f>
+    html   - HTML 网页 (默认)
+    pdf    - PDF 文档 (需要 LaTeX)
+    docx   - Microsoft Word 文档
+    latex  - LaTeX 源文件
+    其他   - Pandoc 支持的任意格式
 
-Specify input format (md, rmd, qmd). Auto-detected from extension.
+=item B<--from, -f> I<FORMAT>
 
-=item B<--outfile, -o>
+指定输入格式。通常会根据文件扩展名自动检测：
 
-Specify output filename.
+    md, markdown  - Markdown
+    rmd           - RMarkdown (需要 R)
+    qmd, quarto   - Quarto
 
-=item B<--outdir, -d>
+=item B<--outfile, -o> I<FILE>
 
-Specify output directory.
+指定输出文件名。如未指定，将使用输入文件名并替换为对应扩展名。
 
-=item B<--workdir>
+=item B<--outdir, -d> I<DIR>
 
-Specify working directory.
+指定输出目录。文件将输出到此目录下。
 
-=item B<--config, -c>
+=item B<--workdir> I<DIR>
 
-Specify a YAML configuration file.
+显式指定工作目录。默认行为：
 
-=item B<--pandoc, -p>
+    - 输入文件是绝对路径：使用文件所在目录
+    - 输入文件是相对路径：使用当前目录
 
-Pass extra options to pandoc (e.g. "-V geometry:margin=1in").
+=back
+
+=head2 配置选项
+
+=over 8
+
+=item B<--config, -c> I<FILE>
+
+指定 YAML 配置文件。配置文件可以设置默认选项和 Pandoc 参数。
+
+=item B<--pandoc, -p> I<OPTIONS>
+
+传递额外选项给 Pandoc。例如：
+
+    fexport -p "-V geometry:margin=1in" -t pdf input.md
+    fexport -p "--toc --toc-depth=2" -t html input.md
+
+=item B<--lang> I<LANG>
+
+指定文档语言，如 C<zh>（中文）或 C<en>（英文）。
+
+=back
+
+=head2 行为控制
+
+=over 8
 
 =item B<--verbose, -v>
 
-Enable verbose output.
+启用详细输出模式，显示 Pandoc 执行过程和详细日志。
 
 =item B<--keep, -k>
 
-Keep intermediate files.
+保留中间文件。对于 PDF 输出，将保留 .tex 文件和编译目录以便调试。
+
+=back
+
+=head2 预览功能
+
+=over 8
 
 =item B<--preview>
 
-Enable live preview (requires browser-sync).
+启用 HTML 文档的实时预览功能。需要安装 browser-sync：
+
+    npm install -g browser-sync
+
+启用后，修改源文件并重新运行 fexport，浏览器会自动刷新。
+
+=item B<--stop-preview>
+
+停止所有正在运行的预览服务器。
+
+=item B<--browser> I<COMMAND>
+
+指定用于预览的浏览器命令。例如：
+
+    fexport --preview --browser=firefox -t html input.md
+    fexport --preview --browser=google-chrome -t html input.md
 
 =back
+
+=head2 帮助
+
+=over 8
+
+=item B<--help, -h>
+
+显示帮助信息。
+
+=back
+
+=head1 EXAMPLES
+
+=head2 基本转换
+
+    # Markdown 转 HTML
+    fexport document.md
+    
+    # Markdown 转 PDF
+    fexport -t pdf document.md
+    
+    # Markdown 转 Word
+    fexport -t docx -o report.docx document.md
+
+=head2 RMarkdown 和 Quarto
+
+    # RMarkdown 转 HTML
+    fexport analysis.Rmd
+    
+    # Quarto 转 PDF
+    fexport -t pdf paper.qmd
+
+=head2 使用预览
+
+    # 启动预览
+    fexport --preview document.md
+    
+    # 修改文档后，重新转换（浏览器自动刷新）
+    fexport document.md
+    
+    # 完成后停止预览服务器
+    fexport --stop-preview
+
+=head2 批量处理
+
+    # 配合 shell 循环使用
+    for f in *.md; do fexport -t pdf -d ./pdf "$f"; done
+
+=head1 CONFIGURATION
+
+可以创建 YAML 配置文件来自定义默认行为。示例配置：
+
+    # ~/.fexport.yaml
+    to: pdf
+    lang: zh
+    pandoc:
+      cmd: "pandoc +RTS -M512M -RTS"
+      filters:
+        - "--citeproc"
+        - "--lua-filter=my-filter.lua"
+      user-opts:
+        - "-V"
+        - "geometry:margin=1in"
+
+使用：C<fexport -c ~/.fexport.yaml input.md>
+
+=head1 FILES
+
+=over 4
+
+=item F<share/defaults.yaml>
+
+默认配置文件
+
+=item F</tmp/fexport-state/>
+
+预览服务器状态目录
+
+=back
+
+=head1 SEE ALSO
+
+L<pandoc(1)>, L<quarto(1)>
+
+=head1 AUTHOR
+
+fexport contributors
 
 =cut
