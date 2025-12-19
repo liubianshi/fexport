@@ -351,6 +351,11 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
 指定 YAML 配置文件。配置文件可以设置默认选项和 Pandoc 参数。
 
+如果不指定，程序会自动搜索以下位置的配置文件（按优先级）：
+
+    1. $XDG_CONFIG_HOME/fexport/config.yaml (默认 ~/.config/fexport/config.yaml)
+    2. ~/.fexport.yaml (向后兼容)
+
 =item B<--pandoc, -p> I<OPTIONS>
 
 传递额外选项给 Pandoc。例如：
@@ -472,9 +477,17 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
 =over 4
 
+=item F<~/.config/fexport/config.yaml>
+
+用户配置文件 (XDG 规范位置)
+
+=item F<~/.fexport.yaml>
+
+用户配置文件 (向后兼容位置)
+
 =item F<share/defaults.yaml>
 
-默认配置文件
+内置默认配置文件
 
 =item F</tmp/fexport-state/>
 

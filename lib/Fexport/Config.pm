@@ -57,8 +57,37 @@ sub _get_defaults {
 sub load_config {
   my ($file) = @_;
 
+  # 如果未指定配置文件，尝试默认位置
+  unless ( defined $file ) {
+    my $home = $ENV{HOME};
+
+    # 如果 HOME 未定义，跳过默认配置文件搜索
+    unless ( defined $home && length $home ) {
+      warn "[Warn] \$HOME is not set, skipping default config file search\n";
+      return {};
+    }
+
+    # XDG 规范: $XDG_CONFIG_HOME/fexport/config.yaml
+    my $xdg_config_home = $ENV{XDG_CONFIG_HOME} // "$home/.config";
+    my $xdg_config      = path($xdg_config_home)->child( 'fexport', 'config.yaml' );
+
+    # 向后兼容: ~/.fexport.yaml
+    my $legacy_config = path($home)->child('.fexport.yaml');
+
+    # 优先使用 XDG 配置，其次使用 legacy 配置
+    if ( $xdg_config->is_file ) {
+      $file = $xdg_config->stringify;
+    }
+    elsif ( $legacy_config->is_file ) {
+      $file = $legacy_config->stringify;
+    }
+    else {
+      return {};    # 无默认配置文件
+    }
+  }
+
   # 增加 -f 判断确保是文件
-  return {} unless defined $file && -f $file;
+  return {} unless -f $file;
 
   # eval 捕获异常是个好习惯
   my $config = eval { LoadFile($file) };
@@ -94,16 +123,18 @@ sub process_params {
   # 自动判断：如果输入文件是绝对路径，使用文件所在目录；如果是相对路径，使用当前目录
   my $work_dir;
 
+  # 用户显式指定了工作目录
   if ( $opts->{workdir} ) {
-    # 用户显式指定了工作目录
     $work_dir = $cwd->child( $opts->{workdir} );
   }
+
+  # 输入文件是绝对路径 -> 使用文件所在目录
   elsif ( defined $infile_raw && path($infile_raw)->is_absolute ) {
-    # 输入文件是绝对路径 -> 使用文件所在目录
     $work_dir = $infile_abs->parent;
   }
+
+  # 输入文件是相对路径或未指定 -> 使用当前目录
   else {
-    # 输入文件是相对路径或未指定 -> 使用当前目录
     $work_dir = $cwd;
   }
 
@@ -162,6 +193,16 @@ sub process_params {
     $abs_outfile = $base_out->child($name);
   }
 
+  # Ensure output directory exists
+  my $out_dir_path = $abs_outfile->parent;
+  unless ( $out_dir_path->exists ) {
+    eval { $out_dir_path->mkpath };
+    if ($@) {
+      warn "[Error] Failed to create output directory '$out_dir_path': $@\n";
+      exit 1;
+    }
+  }
+
   # 5. 返回相对于 work_dir 的路径 (因为脚本后续会 chdir 到 work_dir)
   my $rel_outfile = $abs_outfile->relative($work_dir);
 
@@ -169,23 +210,33 @@ sub process_params {
   return ( "$work_dir", "$resolved_infile", "$rel_outfile" );
 }
 
-# Removed Hash::Merge dependency due to global state issues.
-# Implementing simple recursive merge (Right replace arrays/scalars, Merge hashes)
 sub _recursive_merge {
   my ( $left, $right ) = @_;
+
+  # 1. 快速返回：如果左边没定义，直接用右边；如果右边没定义，保持左边。
   return $right unless defined $left;
   return $left  unless defined $right;
 
+  # 2. 引用相同优化：如果是同一个对象，直接返回
+  return $left if $left eq $right;
+
+  # 3. 只有双方都是 HASH 时才递归
   if ( ref($left) eq 'HASH' && ref($right) eq 'HASH' ) {
+
+    # 浅拷贝左边作为基础，避免修改原始的 Defaults
     my %merged = %$left;
-    for my $key ( keys %$right ) {
-      my $l_val = ( exists $left->{$key} ) ? $left->{$key} : undef;
-      $merged{$key} = _recursive_merge( $l_val, $right->{$key} );
+
+    # 遍历右边进行覆盖或深度合并
+    while ( my ( $key, $r_val ) = each %$right ) {
+
+      # 关键优化：直接传入 $merged{$key}，省去了 exists 判断
+      # 如果 $merged{$key} 不存在，它是 undef，下一层递归会直接返回 $r_val
+      $merged{$key} = _recursive_merge( $merged{$key}, $r_val );
     }
     return \%merged;
   }
 
-  # For arrays and scalars, Right wins (Replacement)
+  # 4. 其他类型（Array, Scalar）或类型不匹配时，右边覆盖左边
   return $right;
 }
 
