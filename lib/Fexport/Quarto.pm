@@ -9,14 +9,15 @@ use Exporter 'import';
 use Path::Tiny;
 use Digest::MD5 qw(md5_hex);
 use File::Spec;
-use YAML         qw(LoadFile DumpFile);
+use YAML         qw(LoadFile DumpFile Load);
 use Scope::Guard qw(guard);
 use List::Util   qw(uniq);
-use IPC::Run3    qw(run3);                # 用于捕获 xdotool 输出等
+use IPC::Run3    qw(run3);                     # 用于捕获 xdotool 输出等
 use List::Util   qw(uniq);
 use POSIX        qw(setsid);
 use IPC::Cmd     qw(can_run);
 
+use Cwd                  qw(getcwd);
 use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 
@@ -26,8 +27,11 @@ our @EXPORT_OK = qw(render_qmd);
 my $PANDOC_DIR = path( find_pandoc_datadir() );
 
 sub render_qmd {
-  my ( $infile_raw, $outformat, $outfile_final, $lang, $preview, $verbose, $keep_intermediates, $outfile_abs_path, $browser ) =
-    @_;
+  my (
+    $infile_raw, $outformat,          $outfile_final,    $lang, $preview,
+    $verbose,    $keep_intermediates, $outfile_abs_path, $browser
+    )
+    = @_;
 
   # 1. 路径对象化
   # $outfile_abs_path 是最终目标的绝对路径 (由脚本传入)
@@ -53,10 +57,11 @@ sub render_qmd {
   }
 
   # 4. 元数据 (Metadata) 注入与保护
-  # 使用 Scope::Guard 确保 _metadata.yml 无论如何都会恢复
+  # 使用 _metadata.yml (目录级别元数据) 而非 _quarto.yml (项目级别配置)
+  # 这样不会干扰用户的项目配置
   {
-    my $meta_file      = path("_metadata.yml");
-    my $backup_file    = path("_metadata.yml_bck");
+    my $meta_file      = $infile->parent->child("_metadata.yml");
+    my $backup_file    = $meta_file->parent->child( $meta_file->basename . "_bck" );
     my $generated_meta = 0;
 
     my $guard = guard {
@@ -68,13 +73,19 @@ sub render_qmd {
       $meta_file->move($backup_file);
     }
 
-    # 加载 Pandoc Defaults 并合并
     my $defaults_path = $PANDOC_DIR->child( "defaults", "2${quarto_target}.yaml" );
-    my $meta_data     = _load_pandoc_defaults($defaults_path);
+    my $default_meta  = _load_pandoc_defaults($defaults_path);
+    my $meta_data     = {};
 
     if ( $backup_file->exists ) {
-      my $existing_meta = LoadFile($backup_file);
-      _merge_yaml( $meta_data, $existing_meta );
+      # 如果存在项目的 _quarto.yml (即备份文件)，以此为基础
+      $meta_data = LoadFile($backup_file);
+      # 将默认配置填入项目配置（仅当项目配置缺少该项时）
+      _merge_yaml( $meta_data, $default_meta );
+    }
+    else {
+      # 否则完全使用默认配置
+      $meta_data = $default_meta;
     }
 
     # 修正 Template 路径 (相对 -> 绝对)
@@ -112,13 +123,20 @@ sub render_qmd {
 
     # 5. 执行 Quarto Render
     my @quarto_cmd = (
-      "quarto",                                                               "render",
-      $infile->stringify,                                                     "--to",
-      $quarto_target,                                                         "--output",
-      $local_outfile->stringify,                                              "--lua-filter",
-      $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify, "--lua-filter",
-      $PANDOC_DIR->child("filters/rsbc.lua")->stringify
+      "quarto",           "render",
+      $infile->stringify, "--to=$quarto_target",
+      "--execute-dir",    getcwd(),
+      "--output",         $local_outfile,
+      "--lua-filter",     $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify,
+      "--lua-filter",     $PANDOC_DIR->child("filters/rsbc.lua")->stringify
     );
+
+    # Explicitly pass pdf-engine if set (prevents Quarto from ignoring it)
+    if ( my $pdf_engine = $meta_data->{'pdf-engine'} ) {
+      push @quarto_cmd, "--pdf-engine=$pdf_engine";
+    }
+
+    print join( " ", @quarto_cmd ), "\n";
 
     # 使用列表 system，安全
     system(@quarto_cmd) == 0 or die "Failed to run quarto: $?";
@@ -134,10 +152,10 @@ sub render_qmd {
     $local_outfile->remove if $local_outfile->absolute ne $final_dest->absolute;
   }
   elsif ( $outformat eq "pdf" ) {
-    _process_pdf_output( $local_outfile, $verbose, $keep_intermediates, $final_dest );
+    _process_pdf_output( $local_outfile, $verbose, $keep_intermediates, $final_dest, $infile );
 
     # PDF 处理函数内部会移动文件，这里只需清理 tex
-    $local_outfile->remove unless $keep_intermediates;
+    $local_outfile->remove if $local_outfile->exists && !$keep_intermediates;
   }
   elsif ( $outformat eq "docx" ) {
 
@@ -165,11 +183,29 @@ sub _process_html_output {
   # 写入最终位置
   path($outfile_dest)->spew_utf8(@lines);
 
-  launch_browser_preview($outfile_dest, $browser) if $preview;
+  launch_browser_preview( $outfile_dest, $browser ) if $preview;
 }
 
 sub _process_pdf_output {
-  my ( $tex_file, $verbose, $keep, $final_pdf_dest ) = @_;
+  my ( $tex_file, $verbose, $keep, $final_pdf_dest, $infile ) = @_;
+
+  # Quarto Book projects output to _book/ subdirectory, try fallback
+  if ( !$tex_file->exists ) {
+    # First try _book/ in CWD (where Quarto renders)
+    my $book_tex = path("_book")->child($tex_file->basename);
+    if ( $book_tex->exists ) {
+      $tex_file = $book_tex;
+    }
+    # Also try _book/ in infile's parent directory
+    elsif ( defined $infile ) {
+      $book_tex = $infile->parent->child("_book")->child($tex_file->basename);
+      if ( $book_tex->exists ) {
+        $tex_file = $book_tex;
+      }
+    }
+  }
+
+  die "Error: TeX file '$tex_file' not found." unless $tex_file->exists;
 
   # 读入 TeX 内容
   my @lines = $tex_file->lines_utf8;
@@ -266,6 +302,17 @@ sub _merge_yaml {
       $dest->{$key} = $val_src;
     }
   }
+}
+
+sub _find_or_default_quarto_yaml {
+    my $infile = shift;
+    
+    # Just check CWD for _quarto.yml
+    my $cwd_config = path("_quarto.yml");
+    return $cwd_config if $cwd_config->exists;
+    
+    # Default to infile directory if not found
+    return $infile->parent->child("_quarto.yml");
 }
 
 1;
