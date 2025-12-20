@@ -3,280 +3,433 @@ package Fexport::Quarto;
 use v5.20;
 use strict;
 use warnings;
+use utf8;
 use Exporter 'import';
 
-# 核心依赖更新
+# 核心依赖
 use Path::Tiny;
 use Digest::MD5 qw(md5_hex);
 use File::Spec;
-use YAML         qw(LoadFile DumpFile Load);
-use Scope::Guard qw(guard);
-use List::Util   qw(uniq);
-use IPC::Run3    qw(run3);                     # 用于捕获 xdotool 输出等
-use List::Util   qw(uniq);
-use POSIX        qw(setsid);
-use IPC::Cmd     qw(can_run);
-
+use YAML                 qw(LoadFile DumpFile Load);
+use Scope::Guard         qw(guard);
+use List::Util           qw(uniq);
+use IPC::Run3            qw(run3);
+use POSIX                qw(setsid);
+use IPC::Cmd             qw(can_run);
+use Cwd                  qw(getcwd);
 use Cwd                  qw(getcwd);
 use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
+use Term::ANSIColor      qw(:constants);
+use IPC::Run3            qw(run3);
+use Encode               qw(encode_utf8);
+
+$Term::ANSIColor::AUTORESET = 1;
 
 our @EXPORT_OK = qw(render_qmd);
 
 # 常量定义
 my $PANDOC_DIR = path( find_pandoc_datadir() );
 
+# ============================================================================
+# 主入口函数
+# ============================================================================
+
 sub render_qmd {
-  my (
-    $infile_raw, $outformat,          $outfile_final,    $lang, $preview,
-    $verbose,    $keep_intermediates, $outfile_abs_path, $browser
-    )
-    = @_;
+  my ($args) = @_;
+
+  # 解构参数
+  my $infile_raw = $args->{infile};
+  my $outformat  = $args->{to};
+  my $outfile    = $args->{outfile};
+  my $lang       = $args->{lang};
+  my $preview    = $args->{preview};
+  my $verbose    = $args->{verbose};
+  my $keep       = $args->{keep};
+  my $browser    = $args->{browser};
 
   # 1. 路径对象化
-  # $outfile_abs_path 是最终目标的绝对路径 (由脚本传入)
-  # Quarto 强制在 CWD 生成文件，所以我们需要计算一个临时的本地文件名
   my $infile     = path($infile_raw)->absolute;
-  my $final_dest = path($outfile_abs_path);
+  my $final_dest = path($outfile);
 
-  # 2. 加载 Quarto 配置
-  my $quarto_config_file = find_resource("quarto_option.yaml");
-  my $quarto_options     = -e $quarto_config_file ? LoadFile($quarto_config_file) : {};
-  my $format_config      = $quarto_options->{$outformat} // {};
+  # 2. 加载格式配置
+  my $format_config = _load_format_config($outformat);
 
-  # 确定中间格式 (例如 pdf -> latex) 和扩展名
+  # 3. 确定 Quarto 目标格式
   my $quarto_target     = $format_config->{intermediate}     // $outformat;
   my $quarto_target_ext = $format_config->{intermediate_ext} // $quarto_target;
 
-  # 3. 计算本地临时文件名 (Local Intermediate)
-  # 逻辑：取 final_dest 的文件名，但替换后缀为 quarto 的目标后缀
-  my $local_outfile = path( $final_dest->basename );
+  # 4. 计算本地临时输出文件名
+  my $local_outfile = _calculate_local_outfile( $infile, $final_dest, $quarto_target_ext, $outformat );
+
+  # 5. 执行 Quarto 渲染 (带元数据保护)
+  $lang = _run_quarto_with_metadata(
+    infile        => $infile,
+    format_config => $format_config,
+    quarto_target => $quarto_target,
+    local_outfile => $local_outfile,
+    lang          => $lang,
+    verbose       => $verbose,
+  );
+
+  # 6. 后处理与移动
+  _dispatch_postprocess(
+    outformat     => $outformat,
+    local_outfile => $local_outfile,
+    final_dest    => $final_dest,
+    infile        => $infile,
+    lang          => $lang,
+    preview       => $preview,
+    verbose       => $verbose,
+    keep          => $keep,
+    browser       => $browser,
+  );
+}
+
+# ============================================================================
+# 配置加载
+# ============================================================================
+
+sub _load_format_config {
+  my ($outformat) = @_;
+
+  my $config_file   = find_resource("defaults.yaml");
+  my $all_options   = -e $config_file ? LoadFile($config_file) : {};
+  my $format_config = $all_options->{$outformat} // {};
+
+  # 设置 FEXPORT_SHARE 环境变量，指向 share 目录
+  my $share_dir = path($config_file)->parent->stringify;
+  local $ENV{FEXPORT_SHARE} = $share_dir;
+
+  # 展开环境变量
+  _substitute_env($format_config);
+
+  # 处理 from-extensions: 将扩展列表转换为 from 字符串
+  if ( my $extensions = delete $format_config->{'from-extensions'} ) {
+    if ( ref $extensions eq 'ARRAY' && @$extensions ) {
+      $format_config->{from} = 'markdown+' . join( '+', @$extensions );
+    }
+  }
+
+  return $format_config;
+}
+
+sub _extract_pandoc_options {
+  my ($format_config) = @_;
+
+  # 排除 fexport 专用的 key
+  my %fexport_keys = map { $_ => 1 } qw(ext intermediate intermediate_ext from-extensions);
+
+  return {
+    map  { $_ => $format_config->{$_} }
+    grep { !$fexport_keys{$_} }
+      keys %$format_config
+  };
+}
+
+# ============================================================================
+# 路径计算
+# ============================================================================
+
+sub _calculate_local_outfile {
+  my ( $infile, $final_dest, $quarto_target_ext, $outformat ) = @_;
+
+  # 为了解决 Quarto embed-resources 找不到资源文件的问题
+  # 我们需要将临时输出文件放在与输入文件相同的目录中
+  my $local_outfile = $infile->parent->child( $final_dest->basename );
+
+  # 如果是中间格式，需要替换扩展名
   if ( $quarto_target_ext ne $outformat ) {
     my $base = $local_outfile->basename(qr/\.[^.]+$/);
-    $local_outfile = path( $base . "." . $quarto_target_ext );
+    $local_outfile = $local_outfile->parent->child( $base . "." . $quarto_target_ext );
   }
 
-  # 4. 元数据 (Metadata) 注入与保护
-  # 使用 _metadata.yml (目录级别元数据) 而非 _quarto.yml (项目级别配置)
-  # 这样不会干扰用户的项目配置
-  {
-    my $meta_file      = $infile->parent->child("_metadata.yml");
-    my $backup_file    = $meta_file->parent->child( $meta_file->basename . "_bck" );
-    my $generated_meta = 0;
+  return $local_outfile;
+}
 
-    my $guard = guard {
-      $meta_file->remove             if $generated_meta;
-      $backup_file->move($meta_file) if $backup_file->exists;
-    };
+# ============================================================================
+# 元数据处理
+# ============================================================================
 
-    if ( $meta_file->exists ) {
-      $meta_file->move($backup_file);
-    }
+sub _prepare_metadata {
+  my ( $format_config, $backup_file ) = @_;
 
-    my $defaults_path = $PANDOC_DIR->child( "defaults", "2${quarto_target}.yaml" );
-    my $default_meta  = _load_pandoc_defaults($defaults_path);
-    my $meta_data     = {};
+  my $default_meta = _extract_pandoc_options($format_config);
 
-    if ( $backup_file->exists ) {
-      # 如果存在项目的 _quarto.yml (即备份文件)，以此为基础
-      $meta_data = LoadFile($backup_file);
-      # 将默认配置填入项目配置（仅当项目配置缺少该项时）
-      _merge_yaml( $meta_data, $default_meta );
-    }
-    else {
-      # 否则完全使用默认配置
-      $meta_data = $default_meta;
-    }
+  return $default_meta unless $backup_file->exists;
 
-    # 修正 Template 路径 (相对 -> 绝对)
-    if ( exists $meta_data->{template} && !path( $meta_data->{template} )->is_absolute ) {
-      my $tmpl_name = $meta_data->{template};
-      $tmpl_name .= ".${quarto_target}" if $tmpl_name !~ /\.\w+$/;
+  my $meta_data = LoadFile($backup_file);
+  _merge_yaml( $meta_data, $default_meta );
+  return $meta_data;
+}
 
-      # 2. 定义探测路径候选列表
-      my $local_tmpl  = path($tmpl_name);                                 # 候选A: 当前工作目录 (CWD)
-      my $pandoc_tmpl = $PANDOC_DIR->child( "templates", $tmpl_name );    # 候选B: ~/.pandoc/templates/
+sub _resolve_template_path {
+  my ( $meta_data, $quarto_target ) = @_;
 
-      # 3. 探测逻辑
-      if ( $local_tmpl->exists ) {
-        $meta_data->{template} = $local_tmpl->absolute->stringify;
-      }
-      elsif ( $pandoc_tmpl->exists ) {
-        $meta_data->{template} = $pandoc_tmpl->absolute->stringify;
-      }
-      elsif ( $meta_data->{template} !~ /^\s*default\s*$/ ) {
-        die "Error: Template file '$tmpl_name' not found.\n"
-          . "Searched in:\n"
-          . "  1. Current Directory: "
-          . path('.')->absolute . "\n"
-          . "  2. Pandoc Directory:  "
-          . $PANDOC_DIR->child("templates") . "\n";
-      }
-    }
+  # Return early if no template is specified or if it's already an absolute path
+  return unless exists $meta_data->{template};
+  return if path( $meta_data->{template} )->is_absolute;
 
-    # 覆盖语言设置
-    $lang //= $meta_data->{lang};
-    $meta_data->{lang} = $lang;
+  # Append file extension if not present
+  my $tmpl_name = $meta_data->{template};
+  $tmpl_name .= ".${quarto_target}" unless $tmpl_name =~ /\.\w+$/;
 
-    DumpFile( $meta_file->stringify, $meta_data );
-    $generated_meta = 1;
+  # Define template search paths
+  my $local_tmpl  = path($tmpl_name);                                 # Current working directory
+  my $pandoc_tmpl = $PANDOC_DIR->child( "templates", $tmpl_name );    # ~/.pandoc/templates/
 
-    # 5. 执行 Quarto Render
-    my @quarto_cmd = (
-      "quarto",           "render",
-      $infile->stringify, "--to=$quarto_target",
-      "--execute-dir",    getcwd(),
-      "--output",         $local_outfile,
-      "--lua-filter",     $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify,
-      "--lua-filter",     $PANDOC_DIR->child("filters/rsbc.lua")->stringify
-    );
+  # Resolve template path by checking existence in order of precedence
+  if ( $local_tmpl->exists ) {
+    $meta_data->{template} = $local_tmpl->absolute->stringify;
+  }
+  elsif ( $pandoc_tmpl->exists ) {
+    $meta_data->{template} = $pandoc_tmpl->absolute->stringify;
+  }
+  elsif ( $meta_data->{template} !~ /^\s*default\s*$/ ) {
 
-    # Explicitly pass pdf-engine if set (prevents Quarto from ignoring it)
-    if ( my $pdf_engine = $meta_data->{'pdf-engine'} ) {
-      push @quarto_cmd, "--pdf-engine=$pdf_engine";
-    }
-
-    print join( " ", @quarto_cmd ), "\n";
-
-    # 使用列表 system，安全
-    system(@quarto_cmd) == 0 or die "Failed to run quarto: $?";
-
-    # Guard 会在离开此块时自动执行清理恢复
+    # Throw error if template not found and not using 'default'
+    die "Error: Template file '$tmpl_name' not found.\n"
+      . "Searched in:\n"
+      . "  1. Current Directory: "
+      . path('.')->absolute . "\n"
+      . "  2. Pandoc Directory:  "
+      . $PANDOC_DIR->child("templates") . "\n";
   }
 
-  # 6. 后处理与移动 (Post-process & Move)
+  return;
+}
+
+# ============================================================================
+# Quarto 执行
+# ============================================================================
+
+sub _run_quarto_with_metadata {
+  my %args = @_;
+  my ( $infile, $format_config, $quarto_target, $local_outfile, $lang, $verbose ) =
+    @args{qw(infile format_config quarto_target local_outfile lang verbose)};
+
+  # 切换工作目录到 input file 所在目录
+  # 这是为了解决 Quarto embed-resources 在 CWD 查找资源的问题
+  my $start_dir = getcwd();
+  my $work_dir  = $infile->parent;
+  chdir $work_dir or die "Cannot chdir to $work_dir: $!";
+
+  my $meta_file      = $work_dir->child("_metadata.yml"); # path relative to new CWD (or abs) - Path::Tiny handles it
+  my $backup_file    = $work_dir->child( "_metadata.yml_bck" );
+  my $generated_meta = 0;
+
+  # Guard: 离开作用域时自动清理/恢复
+  my $guard = guard {
+    if ($generated_meta && $meta_file->exists) {
+        $meta_file->remove;
+    }
+    if ($backup_file->exists) {
+        $backup_file->move($meta_file);
+    }
+    chdir $start_dir; # 恢复工作目录
+  };
+
+  # 备份现有 _metadata.yml
+  $meta_file->move($backup_file) if $meta_file->exists;
+
+  # 准备元数据
+  my $meta_data = _prepare_metadata( $format_config, $backup_file );
+  _resolve_template_path( $meta_data, $quarto_target );
+
+  # 设置语言
+  $lang //= $meta_data->{lang};
+  $meta_data->{lang} = $lang;
+
+  # 写入临时 _metadata.yml
+  DumpFile( $meta_file->stringify, $meta_data );
+  $generated_meta = 1;
+
+  # 构建并执行 Quarto 命令
+  # 注意：此时 CWD 已经是 input dir，所以 execute-dir 为 .
+  my @cmd = _build_quarto_command( $infile->basename, $quarto_target, $local_outfile, $meta_data, $verbose );
+  
+  print encode_utf8(CYAN . "🚀 Running Quarto render..." . RESET . "\n");
+  print FAINT, "   Command: ", join(" ", @cmd), "\n", RESET if $verbose;
+  
+  system(@cmd) == 0 or die RED "❌ Failed to run quarto: $?";
+
+  print encode_utf8(GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n");
+
+  return $lang;
+}
+
+sub _build_quarto_command {
+  my ( $infile_name, $quarto_target, $local_outfile, $meta_data, $verbose ) = @_;
+
+  # Base command array with required arguments
+  # infile_name 只传文件名，因为我们在 input 目录下运行
+  my @cmd = (
+    "quarto",   "render", $infile_name, "--to=$quarto_target", "--execute-dir", ".",
+    "--output", $local_outfile->basename,
+  );
+
+  # 如果不是 verbose 模式，让 Quarto 保持安静 (不打印 Pandoc 参数 dump)
+  push @cmd, "--quiet" unless $verbose;
+
+  # Add Lua filters for document processing
+  if ( $quarto_target eq 'docx' ) {
+    push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify;
+  }
+  
+  push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/rsbc.lua")->stringify;
+
+  # Explicitly pass pdf-engine if specified in metadata
+  if ( my $pdf_engine = $meta_data->{'pdf-engine'} ) {
+    push @cmd, "--pdf-engine=$pdf_engine";
+  }
+
+  return @cmd;
+}
+
+# ============================================================================
+# 后处理分发
+# ============================================================================
+
+sub _dispatch_postprocess {
+  my %args = @_;
+  my ( $outformat, $local_outfile, $final_dest, $infile, $lang, $preview, $verbose, $keep, $browser ) =
+    @args{qw(outformat local_outfile final_dest infile lang preview verbose keep browser)};
+
   if ( $outformat eq "html" ) {
     _process_html_output( $local_outfile, $preview, $final_dest, $browser );
-
-    # HTML 处理完后，如果 local_outfile 和 final_dest 不一样，清理 local
     $local_outfile->remove if $local_outfile->absolute ne $final_dest->absolute;
   }
   elsif ( $outformat eq "pdf" ) {
-    _process_pdf_output( $local_outfile, $verbose, $keep_intermediates, $final_dest, $infile );
-
-    # PDF 处理函数内部会移动文件，这里只需清理 tex
-    $local_outfile->remove if $local_outfile->exists && !$keep_intermediates;
+    _process_pdf_output( $local_outfile, $verbose, $keep, $final_dest, $infile );
+    $local_outfile->remove if $local_outfile->exists && !$keep;
   }
   elsif ( $outformat eq "docx" ) {
-
-    # 原代码 bug 修复：先处理，再移动
     _process_docx_output( $local_outfile, $lang );
     $local_outfile->move($final_dest);
   }
   else {
-    # 默认情况：直接移动
+    # 默认：直接移动
     $local_outfile->move($final_dest) if $local_outfile->absolute ne $final_dest->absolute;
   }
 }
 
-# --- Helpers ---
+# ============================================================================
+# 格式特定后处理
+# ============================================================================
 
 sub _process_html_output {
   my ( $infile, $preview, $outfile_dest, $browser ) = @_;
 
-  # 模拟原来的数组引用接口
   my @lines = $infile->lines_utf8();
-
   fix_citation_etal( \@lines );
   postprocess_html( \@lines );
 
-  # 写入最终位置
   path($outfile_dest)->spew_utf8(@lines);
-
+  print encode_utf8(BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n");
   launch_browser_preview( $outfile_dest, $browser ) if $preview;
 }
 
 sub _process_pdf_output {
   my ( $tex_file, $verbose, $keep, $final_pdf_dest, $infile ) = @_;
 
-  # Quarto Book projects output to _book/ subdirectory, try fallback
-  if ( !$tex_file->exists ) {
-    # First try _book/ in CWD (where Quarto renders)
-    my $book_tex = path("_book")->child($tex_file->basename);
-    if ( $book_tex->exists ) {
-      $tex_file = $book_tex;
-    }
-    # Also try _book/ in infile's parent directory
-    elsif ( defined $infile ) {
-      $book_tex = $infile->parent->child("_book")->child($tex_file->basename);
-      if ( $book_tex->exists ) {
-        $tex_file = $book_tex;
-      }
-    }
-  }
-
+  # Quarto Book 项目可能输出到 _book/ 子目录
+  $tex_file = _find_tex_file( $tex_file, $infile );
   die "Error: TeX file '$tex_file' not found." unless $tex_file->exists;
 
-  # 读入 TeX 内容
+  # 读取并后处理 TeX 内容
   my @lines = $tex_file->lines_utf8;
   postprocess_latex( \@lines );
 
   # 临时编译目录
   my $temp_dir = Path::Tiny->tempdir( CLEANUP => !$keep );
-  if ($keep) {
-    say "Intermediate files kept in: $temp_dir";
-  }
+  say "Intermediate files kept in: $temp_dir" if $keep;
 
   my $temp_tex = $temp_dir->child("intermediate.tex");
   $temp_tex->spew_utf8(@lines);
 
-  # 构建 latexmk 命令 (列表形式)
+  # 执行 latexmk
   my @cmd =
     ( 'latexmk', '-xelatex', "-outdir=" . $temp_dir->stringify, $verbose ? () : '-quiet', $temp_tex->stringify );
-
-  system(@cmd) == 0 or die "Failed to render LaTeX file: $?";
+  
+  print encode_utf8(CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n");
+  
+  if ($verbose) {
+      system(@cmd) == 0 or die RED "❌ Failed to render LaTeX file: $?";
+  } else {
+      my $output;
+      # Capture both stdout and stderr
+      run3 \@cmd, \undef, \$output, \$output;
+      if ($? != 0) {
+          die RED "❌ Failed to render LaTeX file:\n$output";
+      }
+  }
 
   # 移动结果
   my $generated_pdf = $temp_dir->child("intermediate.pdf");
   if ( $generated_pdf->exists ) {
     $generated_pdf->move($final_pdf_dest);
-    say "PDF generated: $final_pdf_dest";
+    print encode_utf8(BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n");
   }
   else {
-    die "Error: latexmk finished but PDF not found.";
+    die RED "❌ Error: latexmk finished but PDF not found.";
   }
+}
+
+sub _find_tex_file {
+  my ( $tex_file, $infile ) = @_;
+
+  return $tex_file if $tex_file->exists;
+
+  # 尝试 _book/ 目录 (Quarto Book 项目)
+  my $book_tex = path("_book")->child( $tex_file->basename );
+  return $book_tex if $book_tex->exists;
+
+  # 尝试输入文件父目录的 _book/
+  if ( defined $infile ) {
+    $book_tex = $infile->parent->child("_book")->child( $tex_file->basename );
+    return $book_tex if $book_tex->exists;
+  }
+
+  return $tex_file;    # 返回原始路径，让调用者处理错误
 }
 
 sub _process_docx_output {
   my ( $docx_file, $lang ) = @_;
-  if ( $lang eq 'zh' ) {
-
-    # 这里的 postprocess_docx 应该是原地修改 docx (解压-修改-打包)
-    postprocess_docx( $docx_file->stringify );
-  }
+  postprocess_docx( $docx_file->stringify ) if $lang eq 'zh';
 }
 
-# --- Config & Metadata Helpers ---
-
-sub _load_pandoc_defaults {
-  my $file = shift;
-  return {} unless defined $file && $file->exists;
-
-  my $yaml = LoadFile($file);
-  _substitute_env($yaml);
-  return $yaml;
-}
+# ============================================================================
+# 通用工具函数
+# ============================================================================
 
 sub _substitute_env {
   my ($data) = @_;
   return unless defined $data;
 
   my $ref = ref $data;
-  if ( !$ref ) {
 
-    # 原地修改 Scalar (利用 $_[0] 的别名特性)
-    # 替换 $VAR 或 ${VAR}，默认为空
-    $_[0] =~ s/\$[{]?(\w+)[}]?/$ENV{$1} \/\/ ''/eg;
+  # Handle scalar: substitute environment variables in-place
+  # Matches $VAR or ${VAR} and replaces with ENV value or empty string
+  if ( !$ref ) {
+    $_[0] =~ s/\$\{?(\w+)\}?/exists $ENV{$1} ? $ENV{$1} : ''/eg;
   }
+
+  # Handle hash: recursively substitute values
   elsif ( $ref eq 'HASH' ) {
     _substitute_env($_) for values %$data;
   }
+
+  # Handle array: recursively substitute elements
   elsif ( $ref eq 'ARRAY' ) {
     _substitute_env($_) for @$data;
   }
+
+  # Handle scalar reference: dereference and substitute
   elsif ( $ref eq 'SCALAR' ) {
     _substitute_env($$data);
   }
+
+  return;
 }
 
 sub _merge_yaml {
@@ -298,21 +451,9 @@ sub _merge_yaml {
       $dest->{$key} = [ uniq( @{ $dest->{$key} }, @$val_src ) ];
     }
     else {
-      # 其他情况（标量或类型不匹配），直接覆盖
       $dest->{$key} = $val_src;
     }
   }
-}
-
-sub _find_or_default_quarto_yaml {
-    my $infile = shift;
-    
-    # Just check CWD for _quarto.yml
-    my $cwd_config = path("_quarto.yml");
-    return $cwd_config if $cwd_config->exists;
-    
-    # Default to infile directory if not found
-    return $infile->parent->child("_quarto.yml");
 }
 
 1;

@@ -10,7 +10,11 @@ use utf8;
 use Path::Tiny;
 use Getopt::Long qw(:config bundling);
 use List::Util   qw(any);
-use Cwd          qw(getcwd);
+use Cwd              qw(getcwd abs_path);
+use Term::ANSIColor  qw(:constants);
+use Encode           qw(encode_utf8);
+
+$Term::ANSIColor::AUTORESET = 1;
 
 # --- Fexport Modules ---
 # 引入 Config 模块中的核心函数
@@ -173,17 +177,16 @@ elsif ( $opts->{from} eq 'rmd' ) {
 elsif ( $opts->{from} =~ /^(qmd|quarto)$/ ) {
 
   # 分支 C: Quarto
-  render_qmd(
-    $infile,
-    $opts->{to},
-    $outfile,    # 传入绝对路径
-    $opts->{lang},
-    $opts->{preview},
-    $opts->{verbose},
-    $opts->{keep},
-    $outfile,    # Quarto 模块 API 需要确认是否还需要这个参数
-    $opts->{browser}
-  );
+  render_qmd({
+    infile  => $infile,
+    to      => $opts->{to},
+    outfile => $outfile,
+    lang    => $opts->{lang},
+    preview => $opts->{preview},
+    verbose => $opts->{verbose},
+    keep    => $opts->{keep},
+    browser => $opts->{browser},
+  });
   $is_external_done = 1;
 }
 else {
@@ -250,7 +253,7 @@ my $clean_path = $final_out->exists ? $final_out->realpath : $final_out->absolut
 # 转为相对于原始 CWD 的路径
 my $display_out = $clean_path->relative($cwd_raw);
 
-say "\nExported: " . $display_out;
+say encode_utf8("\n" . BOLD . GREEN . "🎉 Exported: " . $display_out . RESET);
 
 exit 0;
 

@@ -22,8 +22,27 @@ sub _load_defaults {
     return {};
   }
 
+  # 提取 _defaults 部分作为 fexport 默认值基础
+  my $fexport_defaults = delete $raw->{_defaults} // {};
+  
+  # 提取 pandoc 配置
+  my $pandoc_config = $raw->{pandoc} // {};
+  
+  # 从 _markdown.extensions 构建 markdown-fmt 字符串
+  my $extensions = $raw->{_markdown}{extensions};
+  my @exts_list  = ( defined $extensions && ref($extensions) eq 'ARRAY' ) ? @$extensions : ();
+  
+  $pandoc_config->{'markdown-fmt'} = join( '+', 'markdown', @exts_list );
+  
+
+  # 合并: fexport 默认值 + pandoc 配置
+  $fexport_defaults->{pandoc} = $pandoc_config if %$pandoc_config;
+  
+  # 保留格式配置供 Quarto 模块使用
+  # 注意: 格式配置由 Quarto.pm 直接从文件读取
+  
   # Convert hyphenated keys to underscored keys recursively
-  return _convert_keys($raw);
+  return _convert_keys($fexport_defaults);
 }
 
 sub _convert_keys {

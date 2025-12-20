@@ -1,9 +1,0 @@
-beamer:
-  ext: pdf
-  intermediate: latex
-  intermediate_ext: tex
-pdf:
-  ext: pdf
-  intermediate: latex
-  intermediate_ext: tex
-

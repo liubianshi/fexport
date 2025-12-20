@@ -1,26 +1,22 @@
-# fexport default configuration
-# This file contains the default settings for fexport
+# fexport 统一配置文件
+# 包含: fexport 默认值、Pandoc 设置、格式特定配置
 
-to: html
-from: ~              # Auto-detect
-outfile: ~
-workdir: ~
-outdir: ~
-verbose: 0
-keep: 0
-preview: 0
-lang: zh
+# ============================================================================
+# fexport 默认设置
+# ============================================================================
+
+_defaults:
+  verbose: 0
+  keep: 0
+  preview: 0
+  lang: zh
+
+# ============================================================================
+# Pandoc 通用配置
+# ============================================================================
 
 pandoc:
   cmd: "pandoc +RTS -M512M -RTS"
-  markdown-fmt:
-    - markdown
-    - emoji
-    - east_asian_line_breaks
-    - autolink_bare_uris
-    - mark
-    - lists_without_preceding_blankline
-    - wikilinks_title_before_pipe
   markdown-exts:
     - md
     - markdown
@@ -34,3 +30,203 @@ pandoc:
     - "--citeproc"
     - "--lua-filter=rsbc.lua"
   user-opts: []
+
+# ============================================================================
+# 共享配置 (使用 YAML 锚点)
+# ============================================================================
+
+# Markdown 扩展配置
+_markdown:
+  # 基础扩展列表 (用于 from-extensions)
+  extensions: &md_extensions
+    - emoji
+    - east_asian_line_breaks
+    - autolink_bare_uris
+    - mark
+    - lists_without_preceding_blankline
+    - wikilinks_title_before_pipe
+
+  # TeX 格式额外扩展 (包含 raw_tex)
+  tex_extensions: &md_tex_extensions
+    - emoji
+    - east_asian_line_breaks
+    - autolink_bare_uris
+    - mark
+    - lists_without_preceding_blankline
+    - wikilinks_title_before_pipe
+    - raw_tex
+
+# 字体配置
+_fonts:
+  # 中文字体 (CJK)
+  cjk_default: &cjk_fonts
+    CJKmainfont: LXGW WenKai
+    CJKsansfont: Source Han Sans CN
+    CJKmonofont: LXGW WenKai Mono
+
+  cjk_serif: &cjk_serif_fonts
+    CJKmainfont: Source Han Serif CN
+    CJKsansfont: Source Han Sans CN
+    CJKmonofont: LXGW WenKai Mono
+
+  cjk_beamer: &cjk_beamer_fonts
+    CJKmainfont: 方正聚珍新仿简体
+    CJKsansfont: Source Han Sans CN
+    CJKmonofont: LXGW WenKai Mono
+
+  # 西文字体
+  western_default: &western_fonts
+    mainfont: Times New Roman
+    sansfont: Source Han Sans CN
+    monofont: FiraCode Nerd Font Mono
+    mathfont: DejaVu Math TeX Gyre
+
+  western_beamer: &western_beamer_fonts
+    mainfont: P052 Roman
+    sansfont: Noto Sans
+    monofont: Fira Code
+
+# 参考文献配置
+_bibliography:
+  biblatex: &biblatex_opts
+    biblio-style: "gb7714-2015ay"
+    biblio-title: "参考文献"
+    biblatexoptions:
+      - "backend=biber"
+      - "gbnamefmt=familyahead"
+
+# 通用 metadata
+_metadata:
+  chinese: &chinese_meta
+    author: ["罗伟"]
+    reference-section-title: "参考文献"
+    link-citations: true
+
+# ============================================================================
+# 格式特定配置
+# 每个格式包含:
+#   - ext: 最终输出扩展名
+#   - intermediate/intermediate_ext: 多步转换的中间格式
+#   - from-extensions: Markdown 扩展列表 (自动构建 from 字符串)
+#   - 其他: Pandoc/Quarto 选项
+# ============================================================================
+
+beamer:
+  ext: pdf
+  intermediate: latex
+  intermediate_ext: tex
+  from-extensions: *md_extensions
+  highlight-style: "pygments"
+  template: beamer-diy
+  pdf-engine: xelatex
+  bibliography: "${HOME}/Documents/paper_ref.bib"
+  slide-level: 2
+  citeproc: true
+  include-in-header:
+    - "${FEXPORT_SHARE}/header.tex"
+    - "${HOME}/useScript/beamerheader.tex"
+    - "${HOME}/useScript/code.tex"
+  variables:
+    <<: *cjk_beamer_fonts
+    <<: *western_beamer_fonts
+    fonttheme: structurebold
+    institute: "南开大学 APEC 研究中心"
+    section-titles: false
+    toc: false
+    toc-title: "主要内容"
+    toc-depth: 1
+    biblio-style: gb7714-2015ay
+    bibliography: "${HOME}/Documents/paper_ref.bib"
+
+docx:
+  ext: docx
+  from-extensions: *md_extensions
+  highlight-style: pygments
+  reference-doc: ${HOME}/.pandoc/templates/economic-research-china.docx
+  bibliography: ${HOME}/Documents/url_ref.bib
+  csl: ${HOME}/.pandoc/china-national-standard-gb-t-7714-2015-author-date.csl
+  metadata:
+    link-citations: false
+
+html:
+  ext: html
+  from-extensions: *md_extensions
+  to: html
+  template: normal
+  highlight-style: pygments
+  html-math-method:
+    method: katex
+  embed-resources: false
+  bibliography: ${HOME}/Documents/paper_ref.bib
+  metadata:
+    reference-section-title: "参考文献"
+    link-citations: true
+
+pdf:
+  ext: pdf
+  intermediate: latex
+  intermediate_ext: tex
+  metadata:
+    <<: *chinese_meta
+  from-extensions: *md_extensions
+  highlight-style: "pygments"
+  template: "eisvogel"
+  listings: true
+  pdf-engine: xelatex
+  bibliography: "${HOME}/Documents/paper_ref.bib"
+  citeproc: true
+  include-in-header:
+    - "${FEXPORT_SHARE}/header.tex"
+    - "${HOME}/useScript/code.tex"
+  variables:
+    <<: *cjk_fonts
+    <<: *western_fonts
+    <<: *biblatex_opts
+    indent: true
+
+pptx:
+  ext: pptx
+  from-extensions: *md_extensions
+  to: pptx
+  citeproc: true
+  highlight-style: pygments
+  reference-doc: ${HOME}/.pandoc/templates/custom-reference.pptx
+  bibliography: ${HOME}/Documents/paper_ref.bib
+  csl: ${HOME}/.pandoc/china-national-standard-gb-t-7714-2015-author-date.csl
+  metadata:
+    reference-section-title: "参考文献"
+    link-citations: true
+
+tex:
+  ext: tex
+  metadata:
+    <<: *chinese_meta
+  from-extensions: *md_tex_extensions
+  highlight-style: "pygments"
+  template: eisvogel
+  listings: true
+  pdf-engine: xelatex
+  bibliography: "${HOME}/Documents/paper_ref.bib"
+  variables:
+    <<: *cjk_serif_fonts
+    <<: *western_fonts
+    <<: *biblatex_opts
+    indent: true
+    listings: true
+
+latex:
+  ext: tex
+  metadata:
+    <<: *chinese_meta
+  from-extensions: *md_tex_extensions
+  highlight-style: "pygments"
+  template: eisvogel
+  listings: true
+  pdf-engine: xelatex
+  bibliography: "${HOME}/Documents/paper_ref.bib"
+  variables:
+    <<: *cjk_serif_fonts
+    <<: *western_fonts
+    <<: *biblatex_opts
+    indent: true
+    listings: true
