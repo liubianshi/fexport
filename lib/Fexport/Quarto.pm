@@ -214,19 +214,19 @@ sub _run_quarto_with_metadata {
   my $work_dir  = $infile->parent;
   chdir $work_dir or die "Cannot chdir to $work_dir: $!";
 
-  my $meta_file      = $work_dir->child("_metadata.yml"); # path relative to new CWD (or abs) - Path::Tiny handles it
-  my $backup_file    = $work_dir->child( "_metadata.yml_bck" );
+  my $meta_file      = $work_dir->child("_metadata.yml");    # path relative to new CWD (or abs) - Path::Tiny handles it
+  my $backup_file    = $work_dir->child("_metadata.yml_bck");
   my $generated_meta = 0;
 
   # Guard: 离开作用域时自动清理/恢复
   my $guard = guard {
-    if ($generated_meta && $meta_file->exists) {
-        $meta_file->remove;
+    if ( $generated_meta && $meta_file->exists ) {
+      $meta_file->remove;
     }
-    if ($backup_file->exists) {
-        $backup_file->move($meta_file);
+    if ( $backup_file->exists ) {
+      $backup_file->move($meta_file);
     }
-    chdir $start_dir; # 恢复工作目录
+    chdir $start_dir;    # 恢复工作目录
   };
 
   # 备份现有 _metadata.yml
@@ -247,13 +247,13 @@ sub _run_quarto_with_metadata {
   # 构建并执行 Quarto 命令
   # 注意：此时 CWD 已经是 input dir，所以 execute-dir 为 .
   my @cmd = _build_quarto_command( $infile->basename, $quarto_target, $local_outfile, $meta_data, $verbose );
-  
-  print encode_utf8(CYAN . "🚀 Running Quarto render..." . RESET . "\n");
-  print FAINT, "   Command: ", join(" ", @cmd), "\n", RESET if $verbose;
-  
+
+  print encode_utf8( CYAN . "🚀 Running Quarto render..." . RESET . "\n" );
+  print FAINT, "   Command: ", join( " ", @cmd ), "\n", RESET if $verbose;
+
   system(@cmd) == 0 or die RED "❌ Failed to run quarto: $?";
 
-  print encode_utf8(GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n");
+  print encode_utf8( GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n" );
 
   return $lang;
 }
@@ -275,7 +275,7 @@ sub _build_quarto_command {
   if ( $quarto_target eq 'docx' ) {
     push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify;
   }
-  
+
   push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/rsbc.lua")->stringify;
 
   # Explicitly pass pdf-engine if specified in metadata
@@ -325,7 +325,7 @@ sub _process_html_output {
   postprocess_html( \@lines );
 
   path($outfile_dest)->spew_utf8(@lines);
-  print encode_utf8(BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n");
+  print encode_utf8( BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n" );
   launch_browser_preview( $outfile_dest, $browser ) if $preview;
 }
 
@@ -350,25 +350,53 @@ sub _process_pdf_output {
   # 执行 latexmk
   my @cmd =
     ( 'latexmk', '-xelatex', "-outdir=" . $temp_dir->stringify, $verbose ? () : '-quiet', $temp_tex->stringify );
-  
-  print encode_utf8(CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n");
-  
+
   if ($verbose) {
-      system(@cmd) == 0 or die RED "❌ Failed to render LaTeX file: $?";
-  } else {
-      my $output;
-      # Capture both stdout and stderr
-      run3 \@cmd, \undef, \$output, \$output;
-      if ($? != 0) {
-          die RED "❌ Failed to render LaTeX file:\n$output";
+    print encode_utf8( CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n" );
+    system(@cmd) == 0 or die RED "❌ Failed to render LaTeX file: $?";
+  }
+  else {
+    # Fork a child process to show a spinner
+    my $spinner_pid = fork;
+    if ( defined $spinner_pid && $spinner_pid == 0 ) {
+
+      # Child process: show spinner
+      $| = 1;    # Autoflush
+      binmode( STDOUT, ":utf8" );
+      local $SIG{TERM} = sub { exit 0 };
+      my @chars = qw(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏);
+      my $i     = 0;
+      print CYAN . "⚙️  Compiling PDF with latexmk... " . RESET;
+      while (1) {
+        print "\b" . $chars[ $i++ % @chars ];
+        select( undef, undef, undef, 0.1 );    # Sleep 0.1s
       }
+      exit 0;
+    }
+
+    my $output;
+
+    # Capture both stdout and stderr
+    run3 \@cmd, \undef, \$output, \$output;
+    my $exit_code = $?;
+
+    # Kill spinner
+    if ( defined $spinner_pid ) {
+      kill 'TERM', $spinner_pid;
+      waitpid( $spinner_pid, 0 );
+      print "\r" . ( " " x 40 ) . "\r";    # Clear line
+    }
+
+    if ( $exit_code != 0 ) {
+      die RED "❌ Failed to render LaTeX file:\n$output";
+    }
   }
 
   # 移动结果
   my $generated_pdf = $temp_dir->child("intermediate.pdf");
   if ( $generated_pdf->exists ) {
     $generated_pdf->move($final_pdf_dest);
-    print encode_utf8(BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n");
+    print encode_utf8( BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n" );
   }
   else {
     die RED "❌ Error: latexmk finished but PDF not found.";

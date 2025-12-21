@@ -7,7 +7,7 @@ use Exporter 'import';
 use Path::Tiny;
 use List::Util qw(first);
 
-use Fexport::Util qw(run_pandoc_and_load run_pandoc save_lines get_pandoc_defaults_flag launch_browser_preview run3);
+use Fexport::Util qw(run_pandoc_and_load run_pandoc save_lines launch_browser_preview run3);
 use Fexport::PostProcess
   qw(fix_citation_etal postprocess_html sanitize_markdown_math postprocess_latex postprocess_docx);
 
@@ -34,7 +34,7 @@ sub _to_html {
   my $log_fh      = $args->{log_fh};
 
   # 使用列表形式添加参数，避免手动加引号转义 "--output=\"$outfile\"" 这种易错写法
-  push @$pandoc, get_pandoc_defaults_flag("html"), "--to=html", "--output", $outfile->stringify;
+  push @$pandoc, "--to=html", "--output", $outfile->stringify;
 
   my @html_contents = run_pandoc_and_load( $md_contents, $pandoc, $outfile->stringify, $log_fh );
 
@@ -43,7 +43,7 @@ sub _to_html {
   save_lines( \@html_contents, $outfile );
 
   # Unified preview logic: use browser-sync for HTML
-  launch_browser_preview($outfile, $args->{browser}) if $args->{preview};
+  launch_browser_preview( $outfile, $args->{browser} ) if $args->{preview};
 }
 
 sub _to_docx {
@@ -54,7 +54,7 @@ sub _to_docx {
   my $log_fh      = $args->{log_fh};
 
   unless ( $args->{pandoc_run} ) {
-    push @$pandoc, get_pandoc_defaults_flag("docx"), "--to=docx", "--output", $outfile->stringify;
+    push @$pandoc, "--to=docx", "--output", $outfile->stringify;
     run_pandoc( $md_contents, $pandoc, $log_fh );
   }
   postprocess_docx($outfile);
@@ -79,7 +79,7 @@ sub _to_pdf {
   my $tex_file = $temp_dir->child("intermediate.tex");
 
   # 3. 配置 Pandoc 生成 TeX
-  push @$pandoc, get_pandoc_defaults_flag("tex"), "--to=latex", "--output", $tex_file->stringify;
+  push @$pandoc, "--to=latex", "--output", $tex_file->stringify;
 
   sanitize_markdown_math($md_contents);
 
@@ -95,13 +95,11 @@ sub _to_pdf {
 
   my $out;
   my $err;
-  eval {
-      run3 \@latexmk_cmd, \undef, \$out, \$err;
-  };
+  eval { run3 \@latexmk_cmd, \undef, \$out, \$err; };
   if ($@) {
-      warn "Run3 failed: $@";
+    warn "Run3 failed: $@";
   }
-  my $ret = $?; # run3 updates $?
+  my $ret = $?;    # run3 updates $?
   if ( $ret == 0 ) {
 
     # 5. 移动生成的 PDF 到最终位置
@@ -127,7 +125,7 @@ sub _to_default {
   my $log_fh      = $args->{log_fh};
   my $format      = $args->{format};
 
-  push @$pandoc, get_pandoc_defaults_flag($format), "--to=$format", "--output", $outfile->stringify;
+  push @$pandoc, "--to=$format", "--output", $outfile->stringify;
   run_pandoc( $md_contents, $pandoc, $log_fh );
 }
 

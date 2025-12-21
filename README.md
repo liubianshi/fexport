@@ -55,8 +55,8 @@ npm install -g browser-sync
 # Markdown 转 HTML (默认)
 fexport document.md
 
-# 转换为 PDF
-fexport -t pdf document.md
+# 转换为 PDF 并自动打开
+fexport -t pdf --open document.md
 
 # 转换为 Word
 fexport -t docx -o report.docx document.md
@@ -107,6 +107,7 @@ fexport -t pdf paper.qmd
 | `--preview` | | 启用实时预览 |
 | `--stop-preview` | | 停止预览服务器 |
 | `--browser` | | 指定预览浏览器 |
+| `--open` | | 自动打开生成的文件 |
 | `--help` | `-h` | 显示帮助信息 |
 
 ## 配置文件

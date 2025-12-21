@@ -8,11 +8,13 @@ use utf8;
 
 # --- Core Dependencies ---
 use Path::Tiny;
-use Getopt::Long qw(:config bundling);
-use List::Util   qw(any);
+use Getopt::Long     qw(:config bundling);
+use List::Util       qw(any);
 use Cwd              qw(getcwd abs_path);
 use Term::ANSIColor  qw(:constants);
 use Encode           qw(encode_utf8);
+use POSIX            qw(setsid);
+use Text::ParseWords qw(shellwords);
 
 $Term::ANSIColor::AUTORESET = 1;
 
@@ -37,21 +39,23 @@ $SIG{INT} = $SIG{TERM} = sub {
 # 1. 参数解析与配置合并 (Configuration)
 # ==============================================================================
 my %cli;
+Getopt::Long::Configure( "bundling", "pass_through" );
 GetOptions(
-  'to|t=s'      => \$cli{to},
-  'from|f=s'    => \$cli{from},
-  'outfile|o=s' => \$cli{outfile},
-  'workdir=s'   => \$cli{workdir},
-  'outdir|d=s'  => \$cli{outdir},
-  'verbose|v'   => \$cli{verbose},
-  'pandoc|p=s'  => \$cli{pandoc_opts},
-  'config|c=s'  => \$cli{config},
-  'keep|k'      => \$cli{keep},
-  'preview'     => \$cli{preview},
+  'to|t=s'       => \$cli{to},
+  'from|f=s'     => \$cli{from},
+  'outfile|o=s'  => \$cli{outfile},
+  'workdir=s'    => \$cli{workdir},
+  'outdir|d=s'   => \$cli{outdir},
+  'verbose|v'    => \$cli{verbose},
+  'pandoc|p=s'   => \$cli{pandoc_opts},
+  'config|c=s'   => \$cli{config},
+  'keep|k'       => \$cli{keep},
+  'preview'      => \$cli{preview},
   'stop-preview' => \$cli{stop_preview},
-  'browser=s'   => \$cli{browser},
-  'lang=s'      => \$cli{lang},
-  'help|h'      => sub { help(); exit 0 },
+  'browser=s'    => \$cli{browser},
+  'open'         => \$cli{open},
+  'lang=s'       => \$cli{lang},
+  'help|h'       => sub { help(); exit 0 },
   )
   or die "Error parsing arguments. Use --help for usage.\n";
 
@@ -64,16 +68,36 @@ if ( $cli{stop_preview} ) {
 # A. 加载与合并配置
 # 逻辑移交: Fexport::Config::merge_config 处理了 Defaults -> ConfigFile -> CLI 的优先级
 my $file_config = load_config( $cli{config} );
-my $opts        = merge_config( $file_config, \%cli );
+
+# Handle Pass-through arguments
+my @extra_opts;
+my @input_files;
+
+for my $arg (@ARGV) {
+  if ( $arg =~ /^-/ ) {
+    push @extra_opts, $arg;
+  }
+  else {
+    push @input_files, $arg;
+  }
+}
+
+if ( @input_files > 1 ) {
+  die "Error: Too many input files (" . join( ", ", @input_files ) . "). Only one input file is allowed.\n";
+}
+
+my $infile_raw = $input_files[0];
+my $cwd_raw    = getcwd();
+
+# Merge existing pandoc_opts (string) with extra_opts (array)
+my @final_pandoc_opts = defined $cli{pandoc_opts} ? shellwords( $cli{pandoc_opts} ) : ();
+push @final_pandoc_opts, @extra_opts;
+$cli{pandoc_opts} = \@final_pandoc_opts;
+
+my $opts = merge_config( $file_config, \%cli );
 
 # B. 路径解析与参数推断
 # 逻辑移交: Fexport::Config::process_params 处理了所有复杂的路径计算、格式推断
-if ( @ARGV > 1 ) {
-  die "Error: Too many arguments (" . join(", ", @ARGV) . "). Only one input file is allowed.\n"
-    . "Hint: Did you use a single dash for a long option (e.g. '-to' instead of '--to')?\n";
-}
-my $infile_raw = $ARGV[0];
-my $cwd_raw    = getcwd();
 
 # process_params 返回: (工作目录, 绝对输入路径, 绝对输出路径)
 # 注意: 这里假设你采纳了 Config 模块返回绝对路径的建议。
@@ -177,16 +201,18 @@ elsif ( $opts->{from} eq 'rmd' ) {
 elsif ( $opts->{from} =~ /^(qmd|quarto)$/ ) {
 
   # 分支 C: Quarto
-  render_qmd({
-    infile  => $infile,
-    to      => $opts->{to},
-    outfile => $outfile,
-    lang    => $opts->{lang},
-    preview => $opts->{preview},
-    verbose => $opts->{verbose},
-    keep    => $opts->{keep},
-    browser => $opts->{browser},
-  });
+  render_qmd(
+    {
+      infile  => $infile,
+      to      => $opts->{to},
+      outfile => $outfile,
+      lang    => $opts->{lang},
+      preview => $opts->{preview},
+      verbose => $opts->{verbose},
+      keep    => $opts->{keep},
+      browser => $opts->{browser},
+    }
+  );
   $is_external_done = 1;
 }
 else {
@@ -242,9 +268,10 @@ unless ( $opts->{keep} ) {
 
 # 输出最终结果路径
 # outfile 是相对于 workdir 的，我们需要将其还原为相对于初始执行目录($cwd_raw)的路径
-my $final_out = $outfile->is_absolute 
-    ? $outfile 
-    : $workdir->child($outfile);
+my $final_out =
+    $outfile->is_absolute
+  ? $outfile
+  : $workdir->child($outfile);
 
 # 使用 realpath 解析符号链接和 .. (注意: realpath 需要文件存在，这里已经生成了，所以没问题)
 # 如果文件不存在( dry run?), 则 fallback 到 stringify
@@ -253,7 +280,48 @@ my $clean_path = $final_out->exists ? $final_out->realpath : $final_out->absolut
 # 转为相对于原始 CWD 的路径
 my $display_out = $clean_path->relative($cwd_raw);
 
-say encode_utf8("\n" . BOLD . GREEN . "🎉 Exported: " . $display_out . RESET);
+say encode_utf8( "\n" . BOLD . GREEN . "🎉 Exported: " . $display_out . RESET );
+
+if ( $opts->{open} ) {
+  my $sys = $^O;
+  my $cmd;
+
+  if    ( $sys eq 'linux' )   { $cmd = 'xdg-open' }
+  elsif ( $sys eq 'darwin' )  { $cmd = 'open' }
+  elsif ( $sys eq 'MSWin32' ) { $cmd = 'start' }
+
+  if ($cmd) {
+
+    # Detach and run
+    defined( my $pid = fork ) or die "Can't fork: $!";
+    if ( $pid == 0 ) {
+
+      # Child process
+      defined( my $grandchild_pid = fork ) or die "Can't fork: $!";
+      if ( $grandchild_pid == 0 ) {
+
+        # Grandchild process
+        setsid() or die "Can't start a new session: $!";
+        open STDIN,  '<', '/dev/null';
+        open STDOUT, '>', '/dev/null';
+        open STDERR, '>', '/dev/null';
+        exec $cmd, $clean_path or die "Can't exec $cmd: $!";
+      }
+      else {
+        # Child exits immediately
+        exit 0;
+      }
+    }
+    else {
+      # Parent process
+      waitpid( $pid, 0 );    # Wait for the first child to exit
+      say encode_utf8( BOLD . YELLOW . "🚀 Opening:  " . RESET . $clean_path . " (" . $cmd . ")" );
+    }
+  }
+  else {
+    warn "[Warn] Don't know how to open files on this OS ($sys).\n";
+  }
+}
 
 exit 0;
 
@@ -270,25 +338,25 @@ fexport - 文档转换工具，支持 Markdown、RMarkdown、Quarto 转换为多
 =head1 SYNOPSIS
 
     fexport [选项] [输入文件]
-    
+
     # 基本用法
     fexport input.md                      # 转换为 HTML (默认)
     fexport -t pdf input.md               # 转换为 PDF
     fexport -t docx -o report.docx doc.md # 转换为 Word 文档
-    
+
     # 预览功能
     fexport --preview -t html input.md    # 转换并启动实时预览
     fexport --stop-preview                # 停止所有预览服务器
-    
+
     # 输出目录控制
     fexport -t pdf -d ./output input.md   # 输出到指定目录
-    
+
     # 高级用法
     fexport -t pdf -c myconfig.yaml -v input.md  # 使用配置文件并显示详细信息
 
 =head1 DESCRIPTION
 
-fexport 是一个文档转换工具，基于 Pandoc 实现，支持将 Markdown、RMarkdown 和 
+fexport 是一个文档转换工具，基于 Pandoc 实现，支持将 Markdown、RMarkdown 和
 Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
 主要特性：
@@ -409,6 +477,12 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
     fexport --preview --browser=firefox -t html input.md
     fexport --preview --browser=google-chrome -t html input.md
 
+=item B<--open>
+
+自动打开生成的文件。
+
+    fexport --open input.md
+
 =back
 
 =head2 帮助
@@ -427,10 +501,10 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
     # Markdown 转 HTML
     fexport document.md
-    
+
     # Markdown 转 PDF
     fexport -t pdf document.md
-    
+
     # Markdown 转 Word
     fexport -t docx -o report.docx document.md
 
@@ -438,7 +512,7 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
     # RMarkdown 转 HTML
     fexport analysis.Rmd
-    
+
     # Quarto 转 PDF
     fexport -t pdf paper.qmd
 
@@ -446,10 +520,10 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
     # 启动预览
     fexport --preview document.md
-    
+
     # 修改文档后，重新转换（浏览器自动刷新）
     fexport document.md
-    
+
     # 完成后停止预览服务器
     fexport --stop-preview
 
