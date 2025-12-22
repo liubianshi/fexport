@@ -16,6 +16,8 @@ use Digest::MD5    qw(md5_hex);
 use File::Spec;
 use POSIX    qw(setsid);
 use IPC::Cmd qw(can_run);
+use Term::ANSIColor qw(:constants);
+$Term::ANSIColor::AUTORESET = 1;
 
 # 导出函数名更新
 our @EXPORT_OK = qw(
@@ -182,10 +184,11 @@ sub launch_browser_preview {
 
   # 3. 检查是否已经在运行 (PID 检查逻辑)
   if ( $pid_file->exists ) {
-    my $pid = $pid_file->slurp;
-    chomp $pid;
+    my $content = $pid_file->slurp_utf8;
+    my ($pid) = split( /\n/, $content, 2 );
+    chomp $pid if defined $pid;
 
-    if ( $pid && kill( 0, $pid ) ) {
+    if ( $pid && $pid =~ /^\d+$/ && kill( 0, $pid ) ) {
       say "[Preview] Browser-sync is already running (PID: $pid).";
       say "[Preview] Browser should auto-refresh shortly.";
       return;
@@ -196,7 +199,7 @@ sub launch_browser_preview {
   }
 
   # 4. 启动新的后台进程
-  say "[Preview] Starting browser-sync in background...";
+  say encode_utf8( "\n" . BOLD . "⏳ Starting browser-sync in background..." . RESET );
 
   my $pid = fork();
   if ( !defined $pid ) {
@@ -233,11 +236,12 @@ sub launch_browser_preview {
   }
 
   # === 父进程 (Parent) ===
-  $pid_file->spew($pid);
+  # Save PID and Server Path for identification
+  $pid_file->spew_utf8("$pid\n$server_dir");
 
-  say "[Preview] Server started with PID $pid.";
-  say "[Preview] Serving from: $server_dir";
-  say "[Preview] To stop it manually: fexport --stop-preview";
+  say encode_utf8( "\n" . BOLD . GREEN . "✅ Preview Server started" . RESET . " (PID: $pid)" );
+  say encode_utf8( "   📂 Serving:  " . CYAN . $server_dir . RESET );
+  say encode_utf8( "   💡 Control:  " . YELLOW . "fexport --stop-preview" . RESET );
 
   # Wait a moment for server to start, then open browser from parent (has display access)
   sleep 1;
@@ -271,49 +275,106 @@ sub stop_browser_preview {
   my $state_dir = $sys_tmp->child("fexport-state");
 
   unless ( $state_dir->is_dir ) {
-    say "[Preview] No preview servers are running.";
+    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
     return;
   }
 
   my @pid_files = $state_dir->children(qr/^preview-.*\.pid$/);
 
   if ( @pid_files == 0 ) {
-    say "[Preview] No preview servers are running.";
+    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
     return;
   }
 
-  my $stopped = 0;
+  my @active_previews;
+
+  # 1. Collect active previews
   for my $pid_file (@pid_files) {
-    my $pid = $pid_file->slurp;
-    chomp $pid;
+    my $content = $pid_file->slurp_utf8;
+    my ( $pid, $path ) = split( /\n/, $content, 2 );
+    chomp $pid  if defined $pid;
+    chomp $path if defined $path;
+
+    # Fallback for old PID files (only PID)
+    $path //= "Unknown Path";
 
     if ( $pid && kill( 0, $pid ) ) {
-
-      # Process exists, kill it
-      if ( kill( 'TERM', $pid ) ) {
-        say "[Preview] Stopped browser-sync (PID: $pid).";
-        $stopped++;
-      }
-      else {
-        warn "[Preview] Failed to stop PID $pid: $!\n";
-      }
+      push @active_previews,
+        {
+        pid      => $pid,
+        path     => $path,
+        pid_file => $pid_file
+        };
     }
-
-    # Remove PID file regardless
-    $pid_file->remove;
+    else {
+      # cleanup stale pid file
+      $pid_file->remove;
+    }
   }
 
-  # Also clean up log files
-  for my $log_file ( $state_dir->children(qr/^preview-.*\.log$/) ) {
-    $log_file->remove;
+  if ( @active_previews == 0 ) {
+    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    return;
   }
 
-  if ( $stopped == 0 ) {
-    say "[Preview] No active preview servers found.";
+  my @to_stop;
+
+  # 2. Determine what to stop
+  if ( @active_previews == 1 ) {
+    @to_stop = @active_previews;
   }
   else {
-    say "[Preview] Stopped $stopped preview server(s).";
+    # Interactive selection
+    say "\n[Preview] Multiple preview servers are running:";
+    for my $i ( 0 .. $#active_previews ) {
+      my $p = $active_previews[$i];
+      printf "  [%d] PID: %-6s Path: %s\n", $i + 1, $p->{pid}, $p->{path};
+    }
+    say "  [a] Stop ALL";
+    say "  [c] Cancel";
+
+    print "\nSelect instance(s) to stop [1-${\scalar(@active_previews)}, a, c]: ";
+    my $choice = <STDIN>;
+    chomp $choice;
+
+    if ( lc($choice) eq 'a' ) {
+      @to_stop = @active_previews;
+    }
+    elsif ( lc($choice) eq 'c' || $choice eq '' ) {
+      say "[Preview] Operation cancelled.";
+      return;
+    }
+    elsif ( $choice =~ /^\d+$/ && $choice >= 1 && $choice <= @active_previews ) {
+      push @to_stop, $active_previews[ $choice - 1 ];
+    }
+    else {
+      say "[Preview] Invalid selection.";
+      return;
+    }
   }
+
+  # 3. Stop selected
+  my $stopped_count = 0;
+  for my $item (@to_stop) {
+    my $pid = $item->{pid};
+    if ( kill( 'TERM', $pid ) ) {
+      say encode_utf8( "🛑 " . BOLD . RED . "Stopped" . RESET . " preview server (PID: $pid)" );
+      say encode_utf8( "   📂 Path: " . CYAN . $item->{path} . RESET );
+      $item->{pid_file}->remove;
+
+      # Clean log file (derive name from pid filename)
+      # pid file: preview-HASH.pid -> log file: preview-HASH.log
+      my $log_file = $item->{pid_file}->parent->child( $item->{pid_file}->basename =~ s/\.pid$/.log/r );
+      $log_file->remove if $log_file->exists;
+
+      $stopped_count++;
+    }
+    else {
+      warn "[Preview] Failed to stop PID $pid: $!\n";
+    }
+  }
+
+  say encode_utf8( "\n" . BOLD . GREEN . "✅ Stopped $stopped_count preview server(s)." . RESET ) if $stopped_count > 0;
 }
 
 1;

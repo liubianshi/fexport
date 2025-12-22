@@ -11,11 +11,11 @@ use Path::Tiny;
 use Getopt::Long     qw(:config bundling);
 use List::Util       qw(any);
 use Cwd              qw(getcwd abs_path);
-use Term::ANSIColor  qw(:constants);
 use Encode           qw(encode_utf8);
 use POSIX            qw(setsid);
 use Text::ParseWords qw(shellwords);
 
+use Term::ANSIColor qw(:constants);
 $Term::ANSIColor::AUTORESET = 1;
 
 # --- Fexport Modules ---
@@ -36,63 +36,94 @@ $SIG{INT} = $SIG{TERM} = sub {
 };
 
 # ==============================================================================
-# 1. 参数解析与配置合并 (Configuration)
+# Configuration Parsing and Merging Module
 # ==============================================================================
-my %cli;
-Getopt::Long::Configure( "bundling", "pass_through" );
-GetOptions(
-  'to|t=s'       => \$cli{to},
-  'from|f=s'     => \$cli{from},
-  'outfile|o=s'  => \$cli{outfile},
-  'workdir=s'    => \$cli{workdir},
-  'outdir|d=s'   => \$cli{outdir},
-  'verbose|v'    => \$cli{verbose},
-  'pandoc|p=s'   => \$cli{pandoc_opts},
-  'config|c=s'   => \$cli{config},
-  'keep|k'       => \$cli{keep},
-  'preview'      => \$cli{preview},
-  'stop-preview' => \$cli{stop_preview},
-  'browser=s'    => \$cli{browser},
-  'open'         => \$cli{open},
-  'lang=s'       => \$cli{lang},
-  'help|h'       => sub { help(); exit 0 },
-  )
-  or die "Error parsing arguments. Use --help for usage.\n";
 
-# Handle --stop-preview immediately and exit
+# Purpose: Parse command-line arguments and merge configuration from multiple
+# sources (defaults, config file, CLI arguments) with proper precedence handling.
+
+# ------------------------------------------------------------------------------
+# 1. 参数解析与配置合并
+# ------------------------------------------------------------------------------
+# Separates CLI arguments into two categories:
+# - Arguments before '--' are processed by GetOptions
+# - Arguments after '--' are stored in @passthrough_args for forwarding
+my @passthrough_args;
+
+# Locate the '--' separator using grep (idiomatic Perl approach)
+my ($sep_index) = grep { $ARGV[$_] eq '--' } 0 .. $#ARGV;
+
+if ( defined $sep_index ) {
+  @passthrough_args = splice( @ARGV, $sep_index + 1 );    # Extract pass-through arguments and remove them from @ARGV
+  pop @ARGV;                                              # Remove the '--' separator itself
+}
+
+# ------------------------------------------------------------------------------
+# Parse Command-Line Options
+# ------------------------------------------------------------------------------
+# Configure Getopt::Long for flexible argument handling:
+# - bundling: Allow combining single-letter options (-vk)
+# - pass_through: Allow unrecognized options to remain in @ARGV
+my %cli;
+Getopt::Long::Configure( 'bundling', 'pass_through' );
+
+GetOptions(
+  'from|f=s'     => \$cli{from},               # specify source file
+  'to|t=s'       => \$cli{to},                 # specify destination file
+  'outfile|o=s'  => \$cli{outfile},            # output file path
+  'workdir=s'    => \$cli{workdir},            # working directory
+  'outdir|d=s'   => \$cli{outdir},             # output directory
+  'config|c=s'   => \$cli{config},             # configuration file
+  'keep|k'       => \$cli{keep},               # keep intermediate files
+  'preview'      => \$cli{preview},            # enable preview mode
+  'stop-preview' => \$cli{stop_preview},       # stop preview mode
+  'browser=s'    => \$cli{browser},            # browser to use
+  'open'         => \$cli{open},               # open in browser
+  'lang=s'       => \$cli{lang},               # language setting
+  'verbose|v'    => \$cli{verbose},            # enable verbose output
+  'help|h'       => sub { help(); exit 0 },    # show help and exit
+  )
+  or die "Error: Failed to parse command-line arguments. Use --help for usage.\n";
+
+# ------------------------------------------------------------------------------
+# Handle Special Actions
+# ------------------------------------------------------------------------------
+# Process --stop-preview flag immediately if specified
 if ( $cli{stop_preview} ) {
   stop_browser_preview();
   exit 0;
 }
 
-# A. 加载与合并配置
-# 逻辑移交: Fexport::Config::merge_config 处理了 Defaults -> ConfigFile -> CLI 的优先级
+# ------------------------------------------------------------------------------
+# Load and Merge Configuration
+# ------------------------------------------------------------------------------
+# Configuration precedence (highest to lowest):
+# 1. Command-line arguments (CLI)
+# 2. Configuration file
+# 3. Default values
+#
+# Delegated to: Fexport::Config::merge_config
 my $file_config = load_config( $cli{config} );
 
-# Handle Pass-through arguments
-my @extra_opts;
-my @input_files;
+# ------------------------------------------------------------------------------
+# Validate Input Files
+# ------------------------------------------------------------------------------
+# The remaining items in @ARGV are treated as input files
+my @input_files = @ARGV;
 
-for my $arg (@ARGV) {
-  if ( $arg =~ /^-/ ) {
-    push @extra_opts, $arg;
-  }
-  else {
-    push @input_files, $arg;
-  }
-}
-
+# Enforce single input file constraint
 if ( @input_files > 1 ) {
-  die "Error: Too many input files (" . join( ", ", @input_files ) . "). Only one input file is allowed.\n";
+  die "Error: Multiple input files detected (" . join( ', ', @input_files ) . "). Only one input file is allowed.\n";
 }
+
+# Note: At this point, if @input_files is empty, it may be handled elsewhere
+# or default input behavior may apply depending on the application design.
 
 my $infile_raw = $input_files[0];
 my $cwd_raw    = getcwd();
 
-# Merge existing pandoc_opts (string) with extra_opts (array)
-my @final_pandoc_opts = defined $cli{pandoc_opts} ? shellwords( $cli{pandoc_opts} ) : ();
-push @final_pandoc_opts, @extra_opts;
-$cli{pandoc_opts} = \@final_pandoc_opts;
+# Use passthrough_args as pandoc_opts
+$cli{pandoc_opts} = \@passthrough_args;
 
 my $opts = merge_config( $file_config, \%cli );
 
@@ -277,8 +308,11 @@ my $final_out =
 # 如果文件不存在( dry run?), 则 fallback 到 stringify
 my $clean_path = $final_out->exists ? $final_out->realpath : $final_out->absolute;
 
-# 转为相对于原始 CWD 的路径
-my $display_out = $clean_path->relative($cwd_raw);
+# 转为相对于原始 CWD 的路径 (仅当在当前目录下时显示相对路径)
+my $display_out =
+    path($cwd_raw)->subsumes($clean_path)
+  ? $clean_path->relative($cwd_raw)
+  : $clean_path->absolute;
 
 say encode_utf8( "\n" . BOLD . GREEN . "🎉 Exported: " . $display_out . RESET );
 
@@ -315,7 +349,7 @@ if ( $opts->{open} ) {
     else {
       # Parent process
       waitpid( $pid, 0 );    # Wait for the first child to exit
-      say encode_utf8( BOLD . YELLOW . "🚀 Opening:  " . RESET . $clean_path . " (" . $cmd . ")" );
+      say encode_utf8( BOLD . YELLOW . "🚀 Opening:  " . RESET . $display_out . " (" . $cmd . ")" );
     }
   }
   else {
@@ -330,6 +364,8 @@ sub help {
   Pod::Usage::pod2usage( -verbose => 2 );
 }
 __END__
+
+=encoding utf8
 
 =head1 NAME
 
@@ -427,12 +463,12 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
     1. $XDG_CONFIG_HOME/fexport/config.yaml (默认 ~/.config/fexport/config.yaml)
     2. ~/.fexport.yaml (向后兼容)
 
-=item B<--pandoc, -p> I<OPTIONS>
+=item B<-->
 
-传递额外选项给 Pandoc。例如：
+传递额外选项给 Pandoc。在 C<--> 之后的所有参数将直接传给 Pandoc。例如：
 
-    fexport -p "-V geometry:margin=1in" -t pdf input.md
-    fexport -p "--toc --toc-depth=2" -t html input.md
+    fexport -t pdf input.md -- -V geometry:margin=1in
+    fexport -t html input.md -- --toc --toc-depth=2
 
 =item B<--lang> I<LANG>
 
