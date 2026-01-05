@@ -116,7 +116,8 @@ sub _process_docx_dom {
 
     # 仅当文本发生变化时才写回 DOM
     if ( length($text) != $original_len || $text ne $text_node->textContent ) {
-      $text_node->setData($text);
+      $text_node->removeChildNodes();
+      $text_node->appendText($text);
     }
   }
 }
