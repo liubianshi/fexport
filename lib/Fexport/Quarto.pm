@@ -251,7 +251,7 @@ sub _run_quarto_with_metadata {
   print encode_utf8( CYAN . "🚀 Running Quarto render..." . RESET . "\n" );
   print FAINT, "   Command: ", join( " ", @cmd ), "\n", RESET if $verbose;
 
-  system(@cmd) == 0 or die RED "❌ Failed to run quarto: $?";
+  system(@cmd) == 0 or die encode_utf8( RED . "❌ Failed to run quarto: $?" . RESET );
 
   print encode_utf8( GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n" );
 
@@ -338,7 +338,7 @@ sub _process_pdf_output {
 
   # 读取并后处理 TeX 内容
   my @lines = $tex_file->lines_utf8;
-  postprocess_latex( \@lines );
+  postprocess_latex( \@lines, $infile->parent );
 
   # 临时编译目录
   my $temp_dir = Path::Tiny->tempdir( CLEANUP => !$keep );
@@ -388,7 +388,7 @@ sub _process_pdf_output {
     }
 
     if ( $exit_code != 0 ) {
-      die RED "❌ Failed to render LaTeX file:\n$output";
+      die encode_utf8( RED . "❌ Failed to render LaTeX file:\n$output" . RESET );
     }
   }
 

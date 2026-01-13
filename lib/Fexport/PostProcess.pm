@@ -172,7 +172,7 @@ sub postprocess_html {
 # ==============================================================================
 
 sub postprocess_latex {
-  my $content_ref = shift;
+  my ($content_ref, $source_dir) = @_;
 
   # 预编译正则
   state $words       = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
@@ -184,6 +184,41 @@ sub postprocess_latex {
 
   my $pre_line = "";
   my @table_labels;
+  
+  # ... (macro injection block unchanged) ...
+  
+  # 0. 注入 pandocbounded 兼容性宏 (Pandoc 3.x+ 生成的新命令，老模板可能缺失)
+  my $pandoc_bounded_macro = <<'EOF';
+\makeatletter
+\@ifundefined{pandocbounded}{%
+  \newsavebox\pandoc@box
+  \newcommand*\pandocbounded[1]{%
+    \sbox\pandoc@box{#1}%
+    \ifdim\wd\pandoc@box>\linewidth
+      \resizebox{\linewidth}{!}{\usebox\pandoc@box}%
+    \else
+      \usebox\pandoc@box
+    \fi
+  }
+}{}
+\makeatother
+EOF
+
+  # 将宏插入到 \begin{document} 之前 (最安全的位置)
+  my $inserted = 0;
+
+  for (my $i = 0; $i < @{$content_ref}; $i++) {
+    if ($content_ref->[$i] =~ /^\s*\\begin\{document\}/) {
+      splice @{$content_ref}, $i, 0, $pandoc_bounded_macro;
+      $inserted = 1;
+      last;
+    }
+  }
+  
+  # Fallback: 插入到最前面 (仅当找不到 document 时，可能有风险但好过不插)
+  unless ($inserted) {
+    unshift @{$content_ref}, $pandoc_bounded_macro;
+  }
 
   for ( @{$content_ref} ) {
 
@@ -211,6 +246,11 @@ sub postprocess_latex {
     if (m/^\\begin\{\w+table\}/) {
       $_ .= ( pop @table_labels ) // "";
     }
+
+    # 4. Fix paths:
+    #   a) absolute paths corrupted by Quarto (./tmp/foo -> /tmp/foo)
+    #   b) relative paths in subdirectories (img/foo -> doc/img/foo)
+    s/(\\includegraphics(?:\[[^\]]*\])?\{)([^\}]+)\}/_fix_image_path($1, $2, $source_dir)/gex;
 
     $pre_line = $_;
   }
@@ -246,3 +286,26 @@ sub fix_citation_etal {
 }
 
 1;
+
+sub _fix_image_path {
+  my ($prefix, $path_str, $source_dir) = @_;
+  my $fixed = $prefix . $path_str . "}";
+  
+  # Case a: Quarto corrupted absolute path (./tmp/... -> /tmp/...)
+  if ($path_str =~ /^\.\//) {
+      my $abs_candidate = substr($path_str, 1); # remove leading .
+      if (-e $abs_candidate) {
+          return $prefix . $abs_candidate . "}";
+      }
+  }
+  
+  # Case b: Relative path from subdir (only if not fixed by Case a and doesn't exist in root)
+  if (! -e $path_str && $source_dir && $path_str !~ /^\//) {
+      my $rel_path = path($source_dir)->child($path_str);
+      if ($rel_path->exists) {
+           return $prefix . $rel_path . "}";
+      }
+  }
+  
+  return $fixed;
+}
