@@ -276,7 +276,13 @@ sub _build_quarto_command {
     push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify;
   }
 
-  push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/rsbc.lua")->stringify;
+  my $rsbc_filter = find_resource("rsbc.lua");
+  if ( $rsbc_filter && -e $rsbc_filter ) {
+    push @cmd, "--lua-filter", $rsbc_filter;
+  }
+  else {
+    push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/rsbc.lua")->stringify;
+  }
 
   # Explicitly pass pdf-engine if specified in metadata
   if ( my $pdf_engine = $meta_data->{'pdf-engine'} ) {

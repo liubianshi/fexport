@@ -11,7 +11,7 @@ use Path::Tiny;
 use Getopt::Long     qw(:config bundling);
 use List::Util       qw(any);
 use Cwd              qw(getcwd abs_path);
-use Encode           qw(encode_utf8);
+use Encode           qw(encode_utf8 decode_utf8);
 use POSIX            qw(setsid);
 use Text::ParseWords qw(shellwords);
 
@@ -48,6 +48,9 @@ $SIG{INT} = $SIG{TERM} = sub {
 # Separates CLI arguments into two categories:
 # - Arguments before '--' are processed by GetOptions
 # - Arguments after '--' are stored in @passthrough_args for forwarding
+# Decode command line arguments to internal character strings
+@ARGV = map { decode_utf8($_) } @ARGV;
+
 my @passthrough_args;
 
 # Locate the '--' separator using grep (idiomatic Perl approach)
@@ -120,7 +123,7 @@ if ( @input_files > 1 ) {
 # or default input behavior may apply depending on the application design.
 
 my $infile_raw = $input_files[0];
-my $cwd_raw    = getcwd();
+my $cwd_raw    = decode_utf8(getcwd());
 
 # Use passthrough_args as pandoc_opts
 $cli{pandoc_opts} = \@passthrough_args;

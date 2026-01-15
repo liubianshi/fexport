@@ -40,8 +40,8 @@ sub postprocess_docx {
     die "Failed to read docx file: $docx_path\n";
   }
 
-  # 2. 定义需要处理的 XML 文件列表 (正文和脚注)
-  my @targets = ( 'word/document.xml', 'word/footnotes.xml' );
+  # 2. 定义需要处理的 XML 文件列表 (正文、脚注、样式)
+  my @targets = ( 'word/document.xml', 'word/footnotes.xml', 'word/styles.xml' );
 
   for my $xml_file (@targets) {
     my $member = $zip->memberNamed($xml_file);
@@ -89,7 +89,18 @@ sub _process_docx_dom {
     }
   }
 
-  # --- B. 文本修复: 遍历所有文本节点 <w:t> ---
+  # --- B. 样式修复: 修正首行缩进 (2字符 vs 0.35cm 问题) ---
+  # 现象: Pandoc/Template 可能同时设置 w:firstLine="200" (twips, ~0.35cm) 和 w:firstLineChars="200" (200%, 2 chars)
+  # Word 有时优先使用 firstLine 导致缩进过小。
+  # 修复: 仅当 firstLineChars 为 200 (2字符) 时，才删除 firstLine (绝对值)
+  # 避免误伤其他故意设置的缩进
+  for my $ind_node ( $xpc->findnodes('//w:ind[@w:firstLineChars="200"]') ) {
+    if ( $ind_node->hasAttribute('w:firstLine') ) {
+      $ind_node->removeAttribute('w:firstLine');
+    }
+  }
+
+  # --- C. 文本修复: 遍历所有文本节点 <w:t> ---
   # DOM 修改最安全，不会破坏 XML 标签结构
   for my $text_node ( $xpc->findnodes('//w:t') ) {
     my $text         = $text_node->textContent;
