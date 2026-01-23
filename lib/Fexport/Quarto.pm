@@ -429,7 +429,7 @@ sub _find_tex_file {
 
 sub _process_docx_output {
   my ( $docx_file, $lang ) = @_;
-  postprocess_docx( $docx_file->stringify ) if $lang eq 'zh';
+  postprocess_docx( $docx_file->stringify );
 }
 
 # ============================================================================
