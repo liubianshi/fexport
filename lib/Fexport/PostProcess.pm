@@ -90,45 +90,58 @@ sub _process_docx_dom {
   }
 
   # --- B. 样式修复: 修正首行缩进 (2字符 vs 0.35cm 问题) ---
-  # 现象: Pandoc/Template 可能同时设置 w:firstLine="200" (twips, ~0.35cm) 和 w:firstLineChars="200" (200%, 2 chars)
-  # Word 有时优先使用 firstLine 导致缩进过小。
-  # 修复: 仅当 firstLineChars 为 200 (2字符) 时，才删除 firstLine (绝对值)
-  # 避免误伤其他故意设置的缩进
   for my $ind_node ( $xpc->findnodes('//w:ind[@w:firstLineChars="200"]') ) {
     if ( $ind_node->hasAttribute('w:firstLine') ) {
       $ind_node->removeAttribute('w:firstLine');
     }
   }
 
-  # --- C. 文本修复: 遍历所有文本节点 <w:t> ---
-  # DOM 修改最安全，不会破坏 XML 标签结构
-  for my $text_node ( $xpc->findnodes('//w:t') ) {
-    my $text         = $text_node->textContent;
-    my $original_len = length($text);
+  # --- C. 文本修复: 按段落遍历所有文本节点 <w:t> ---
+  # 改为按段落遍历，以维护段落内的上下文状态（如前一个字符是否为标点）
+  for my $p_node ( $xpc->findnodes('//w:p') ) {
+    my $last_char_is_punct = 0;
 
-    # 1. 修复 "et al." (中文 "等")
-    $text =~ s/(?<=[a-zA-Z])(,\s|\s)等/et al./g;
+    # 查找段落内的所有 text 节点 (通常在 w:r 内部)
+    # 注意：这里假设 w:t 都在 w:r 内，且顺序符合阅读顺序
+    for my $text_node ( $xpc->findnodes( './/w:t', $p_node ) ) {
+      my $text         = $text_node->textContent;
+      my $original_len = length($text);
 
-    # 2. 修复 CJK 直角引号
-    $text =~ s/「/“/g;
-    $text =~ s/」/”/g;
+      # 0. 跨节点空格清理
+      # 如果上一个节点以中文标点结尾，且当前节点以空白开头，则去除当前节点的开头空白
+      if ($last_char_is_punct) {
+        $text =~ s/^\s+//;
+      }
 
-    # 3. 英文括号转中文括号 (当括号内是中文或非 ASCII 时)
-    # 逻辑：非 ASCII 字符前后的英文括号转为中文括号
-    # 注意：这里简化了逻辑，因为在 DOM 中我们只看得到纯文本，看不到原本复杂的 w:r 标签分割
-    # 如果 Pandoc 生成的括号和文字在同一个 <w:t> 里，这依然有效
+      # 1. 修复 "et al." (中文 "等")
+      $text =~ s/(?<=[a-zA-Z])(,\s|\s)等/et al./g;
 
-    # 简单策略：如果括号内包含至少3个字符且非纯数字/引用，尝试转换
-    # (原逻辑比较复杂，这里采用更安全的文本替换策略)
-    $text =~ s/\( ([^)]*?[\p{Han}]+[^)]*?) \)/（$1）/gx;
+      # 2. 修复 CJK 直角引号
+      $text =~ s/「/“/g;
+      $text =~ s/」/”/g;
 
-    # 4. 删除中文标点后的多余空格
-    $text =~ s/([（）。，：、])\s+/$1/g;
+      # 3. 英文括号转中文括号
+      $text =~ s/\( ([^)]*?[\p{Han}]+[^)]*?) \)/（$1）/gx;
 
-    # 仅当文本发生变化时才写回 DOM
-    if ( length($text) != $original_len || $text ne $text_node->textContent ) {
-      $text_node->removeChildNodes();
-      $text_node->appendText($text);
+      # 4. 删除中文标点后的多余空格 (节点内)
+      $text =~ s/([（）。，：、])\s+/$1/g;
+
+      # 更新状态：检查当前节点末尾是否为中文标点
+      # 注意：如果节点内容变空了（例如只剩空格被删除了），状态应该保持还是重置？
+      # 这里逻辑：如果当前节点非空，则更新状态；如果变空了，理论上应该继承上一个状态？
+      # 简化处理：只有非空内容才更新状态
+      if ( length($text) > 0 ) {
+        $last_char_is_punct = ( $text =~ /[（）。，：、]$/ );
+      }
+
+      # 仅当文本发生变化时才写回 DOM
+      if ( length($text) != $original_len || $text ne $text_node->textContent ) {
+        $text_node->removeChildNodes();
+        # 必须保留 xml:space="preserve" 属性吗？
+        # 如果 text 变空了，可能需要保留空节点或者删除？
+        # Word 通常允许空 w:t，但最好保留
+        $text_node->appendText($text);
+      }
     }
   }
 }
