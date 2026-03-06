@@ -6,6 +6,9 @@ use strict;
 use warnings;
 use utf8;
 
+use FindBin;
+use lib "$FindBin::RealBin/../lib/perl5", "$FindBin::RealBin/../lib";
+
 # --- Core Dependencies ---
 use Path::Tiny;
 use Getopt::Long     qw(:config bundling);
