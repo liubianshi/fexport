@@ -60,31 +60,31 @@ _markdown:
 _fonts:
   # 中文字体 (CJK)
   cjk_default: &cjk_fonts
-    CJKmainfont: LXGW WenKai
-    CJKsansfont: Source Han Sans CN
-    CJKmonofont: LXGW WenKai Mono
+    CJKmainfont: "LXGW WenKai"
+    CJKsansfont: "Source Han Sans CN"
+    CJKmonofont: "LXGW WenKai Mono"
 
   cjk_serif: &cjk_serif_fonts
-    CJKmainfont: Source Han Serif CN
-    CJKsansfont: Source Han Sans CN
-    CJKmonofont: LXGW WenKai Mono
+    CJKmainfont: "Source Han Serif CN"
+    CJKsansfont: "Source Han Sans CN"
+    CJKmonofont: "LXGW WenKai Mono"
 
   cjk_beamer: &cjk_beamer_fonts
-    CJKmainfont: 方正聚珍新仿简体
-    CJKsansfont: Source Han Sans CN
-    CJKmonofont: LXGW WenKai Mono
+    CJKmainfont: "方正聚珍新仿简体"
+    CJKsansfont: "Source Han Sans CN"
+    CJKmonofont: "LXGW WenKai Mono"
 
   # 西文字体
   western_default: &western_fonts
-    mainfont: Times New Roman
-    sansfont: Source Han Sans CN
-    monofont: FiraCode Nerd Font Mono
-    mathfont: DejaVu Math TeX Gyre
+    mainfont: "Times New Roman"
+    sansfont: "Source Han Sans CN"
+    monofont: "FiraCode Nerd Font Mono"
+    mathfont: "DejaVu Math TeX Gyre"
 
   western_beamer: &western_beamer_fonts
-    mainfont: P052 Roman
-    sansfont: Noto Sans
-    monofont: Fira Code
+    mainfont: "P052 Roman"
+    sansfont: "Noto Sans"
+    monofont: "Fira Code"
 
 # 参考文献配置
 _bibliography:
@@ -101,6 +101,45 @@ _metadata:
     author: ["罗伟"]
     reference-section-title: "参考文献"
     link-citations: true
+
+# 组合变量锚点
+# 将多个字体/参考文献锚点展开为单一锚点，避免 YAML 解析器对多 << 支持不一致的问题
+_variables:
+  pdf: &pdf_vars
+    CJKmainfont: LXGW WenKai
+    CJKsansfont: Source Han Sans CN
+    CJKmonofont: LXGW WenKai Mono
+    mainfont: Times New Roman
+    sansfont: Source Han Sans CN
+    monofont: FiraCode Nerd Font Mono
+    mathfont: DejaVu Math TeX Gyre
+    biblio-style: "gb7714-2015ay"
+    biblio-title: "参考文献"
+    biblatexoptions:
+      - "backend=biber"
+      - "gbnamefmt=familyahead"
+
+  tex: &tex_vars
+    CJKmainfont: Source Han Serif CN
+    CJKsansfont: Source Han Sans CN
+    CJKmonofont: LXGW WenKai Mono
+    mainfont: Times New Roman
+    sansfont: Source Han Sans CN
+    monofont: FiraCode Nerd Font Mono
+    mathfont: DejaVu Math TeX Gyre
+    biblio-style: "gb7714-2015ay"
+    biblio-title: "参考文献"
+    biblatexoptions:
+      - "backend=biber"
+      - "gbnamefmt=familyahead"
+
+  beamer: &beamer_vars
+    CJKmainfont: 方正聚珍新仿简体
+    CJKsansfont: Source Han Sans CN
+    CJKmonofont: LXGW WenKai Mono
+    mainfont: P052 Roman
+    sansfont: Noto Sans
+    monofont: Fira Code
 
 # ============================================================================
 # 格式特定配置
@@ -124,11 +163,9 @@ beamer:
   citeproc: true
   include-in-header:
     - "${FEXPORT_SHARE}/header.tex"
-    - "${HOME}/useScript/beamerheader.tex"
-    - "${HOME}/useScript/code.tex"
+    - "${FEXPORT_SHARE}/beamerheader.tex"
   variables:
-    <<: *cjk_beamer_fonts
-    <<: *western_beamer_fonts
+    <<: *beamer_vars
     fonttheme: structurebold
     institute: "南开大学 APEC 研究中心"
     section-titles: false
@@ -177,11 +214,8 @@ pdf:
   citeproc: true
   include-in-header:
     - "${FEXPORT_SHARE}/header.tex"
-    - "${HOME}/useScript/code.tex"
   variables:
-    <<: *cjk_fonts
-    <<: *western_fonts
-    <<: *biblatex_opts
+    <<: *pdf_vars
     indent: true
 
 pptx:
@@ -200,7 +234,9 @@ pptx:
 tex:
   ext: tex
   metadata:
-    <<: *chinese_meta
+    author: ["罗伟"]
+    reference-section-title: "参考文献"
+    link-citations: true
   from-extensions: *md_tex_extensions
   highlight-style: "pygments"
   template: eisvogel
@@ -208,9 +244,7 @@ tex:
   pdf-engine: xelatex
   bibliography: "${HOME}/Documents/paper_ref.bib"
   variables:
-    <<: *cjk_serif_fonts
-    <<: *western_fonts
-    <<: *biblatex_opts
+    <<: *tex_vars
     indent: true
     listings: true
 
@@ -225,8 +259,6 @@ latex:
   pdf-engine: xelatex
   bibliography: "${HOME}/Documents/paper_ref.bib"
   variables:
-    <<: *cjk_serif_fonts
-    <<: *western_fonts
-    <<: *biblatex_opts
+    <<: *tex_vars
     indent: true
     listings: true

@@ -90,8 +90,12 @@ sub _to_pdf {
 
   # 4. 运行 latexmk
   # 使用 run3 替代 system，便于测试 mock 和捕获输出
-  my @latexmk_cmd =
-    ( 'latexmk', '-xelatex', '-outdir=' . $temp_dir->stringify, $verbose ? () : '-quiet', $tex_file->stringify );
+  my @latexmk_cmd = (
+    'latexmk', '-xelatex',
+    '-outdir=' . $temp_dir->stringify,
+    $verbose ? '-verbose' : '-quiet',
+    $tex_file->stringify
+  );
 
   my $out;
   my $err;

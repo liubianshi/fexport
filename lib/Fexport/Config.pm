@@ -6,10 +6,14 @@ use warnings;
 use Exporter 'import';
 use YAML::XS qw(LoadFile);
 use Path::Tiny;
+use Storable qw(dclone);
 
-our @EXPORT_OK = qw(load_config merge_config process_params);
+our @EXPORT_OK = qw(load_config merge_config process_params get_format_config);
 
 use Fexport::Util qw(find_resource);
+
+# Raw format sections from defaults.yaml (populated by _load_defaults, keyed by format name)
+my %FORMAT_RAW;
 
 # Load Global Defaults from YAML file
 sub _load_defaults {
@@ -24,23 +28,26 @@ sub _load_defaults {
 
   # 提取 _defaults 部分作为 fexport 默认值基础
   my $fexport_defaults = delete $raw->{_defaults} // {};
-  
+
   # 提取 pandoc 配置
   my $pandoc_config = $raw->{pandoc} // {};
-  
+
   # 从 _markdown.extensions 构建 markdown-fmt 字符串
   my $extensions = $raw->{_markdown}{extensions};
   my @exts_list  = ( defined $extensions && ref($extensions) eq 'ARRAY' ) ? @$extensions : ();
-  
+
   $pandoc_config->{'markdown-fmt'} = join( '+', 'markdown', @exts_list );
-  
 
   # 合并: fexport 默认值 + pandoc 配置
   $fexport_defaults->{pandoc} = $pandoc_config if %$pandoc_config;
-  
-  # 保留格式配置供 Quarto 模块使用
-  # 注意: 格式配置由 Quarto.pm 直接从文件读取
-  
+
+  # 提取格式特定配置 (不以 _ 开头且不是 pandoc 的顶级 key 均视为格式配置)
+  my $share_dir = path($defaults_file)->parent->stringify;
+  for my $fmt ( grep { !/^_/ && $_ ne 'pandoc' } keys %$raw ) {
+    $FORMAT_RAW{$fmt} = { %{ $raw->{$fmt} } };                # shallow copy
+    $FORMAT_RAW{$fmt}{_share_dir} = $share_dir;
+  }
+
   # Convert hyphenated keys to underscored keys recursively
   return _convert_keys($fexport_defaults);
 }
@@ -71,6 +78,95 @@ my $DEFAULTS;
 sub _get_defaults {
   $DEFAULTS //= _load_defaults();
   return $DEFAULTS;
+}
+
+# 展开字符串中的环境变量 ($VAR 或 ${VAR})
+sub _substitute_env {
+  my ($data) = @_;
+  return unless defined $data;
+
+  my $ref = ref $data;
+
+  if ( !$ref ) {
+    $_[0] =~ s/\$\{?(\w+)\}?/exists $ENV{$1} ? $ENV{$1} : ''/eg;
+  }
+  elsif ( $ref eq 'HASH' ) {
+    _substitute_env($_) for values %$data;
+  }
+  elsif ( $ref eq 'ARRAY' ) {
+    _substitute_env($_) for @$data;
+  }
+  elsif ( $ref eq 'SCALAR' ) {
+    _substitute_env($$data);
+  }
+
+  return;
+}
+
+# 展开 YAML 合并键 (<<)，处理多个 << 的情况
+# YAML::XS 在遇到多个 << 时只保留最后一个为字面 key，需要手动展开
+sub _expand_merge_keys {
+  my ($data) = @_;
+  return $data unless ref $data;
+
+  if ( ref $data eq 'HASH' ) {
+    if ( exists $data->{'<<'} ) {
+      my $merge_src = delete $data->{'<<'};
+      if ( ref $merge_src eq 'HASH' ) {
+        for my $k ( keys %$merge_src ) {
+          $data->{$k} //= $merge_src->{$k};
+        }
+      }
+      elsif ( ref $merge_src eq 'ARRAY' ) {
+        for my $src (@$merge_src) {
+          if ( ref $src eq 'HASH' ) {
+            for my $k ( keys %$src ) {
+              $data->{$k} //= $src->{$k};
+            }
+          }
+        }
+      }
+    }
+    _expand_merge_keys($_) for values %$data;
+  }
+  elsif ( ref $data eq 'ARRAY' ) {
+    _expand_merge_keys($_) for @$data;
+  }
+
+  return $data;
+}
+
+# 格式配置缓存
+my %FORMAT_CONFIG_CACHE;
+
+sub _process_format_config {
+  my ($format) = @_;
+  return {} unless exists $FORMAT_RAW{$format};
+
+  my $copy      = dclone( $FORMAT_RAW{$format} );
+  my $share_dir = delete $copy->{_share_dir} // '';
+
+  # 展开 YAML 合并键 (YAML::XS 对多个 << 的处理不完整)
+  _expand_merge_keys($copy);
+
+  # 临时设置 FEXPORT_SHARE，供环境变量展开使用
+  local $ENV{FEXPORT_SHARE} = $share_dir;
+  _substitute_env($copy);
+
+  # 将 from-extensions 数组转换为 pandoc from 字符串
+  if ( my $extensions = delete $copy->{'from-extensions'} ) {
+    if ( ref $extensions eq 'ARRAY' && @$extensions ) {
+      $copy->{from} = 'markdown+' . join( '+', @$extensions );
+    }
+  }
+
+  return $copy;
+}
+
+sub get_format_config {
+  my ($format) = @_;
+  _get_defaults();    # 确保 %FORMAT_RAW 已填充
+  return $FORMAT_CONFIG_CACHE{$format} //= _process_format_config($format);
 }
 
 sub load_config {
@@ -125,6 +221,11 @@ sub merge_config {
 
   $merged = _recursive_merge( $merged, $file_config ) if $file_config;
   $merged = _recursive_merge( $merged, $cli_opts )    if $cli_opts;
+
+  # 将格式特定配置挂载到 format_opts，供 build_cmd / Quarto 使用
+  if ( defined $merged->{to} ) {
+    $merged->{format_opts} = get_format_config( $merged->{to} );
+  }
 
   return $merged;
 }

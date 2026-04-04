@@ -1,4 +1,39 @@
 
+\usepackage{fontspec}
+\usepackage{parskip}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{unicode-math}
+\setmathfont{DejaVu Math TeX Gyre}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{longtable}
+\usepackage{tabu}
+%\usepackage[american]{babel}  % Commented out: conflicts with template
+\usepackage{float}
+\usepackage{threeparttable}
+\usepackage{lscape}
+\usepackage{booktabs}
+\usepackage{indentfirst}
+\usepackage{geometry}
+\usepackage{colortbl}
+\usepackage{hhline}
+\usepackage{makecell}
+\usepackage{multicol}
+\usepackage{threeparttablex}
+\usepackage{wrapfig}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{pdflscape}
+\usepackage{bm}
+
+% 设置间距
+\linespread{1.5}  %行间距
+\setlength{\parskip}{0.3\baselineskip} %段间距
+\setlength{\parindent}{2em}
+
+\usepackage[BoldFont, SlantFont]{xeCJK}
+
 % ============================================================================
 % 表格扩展支持
 % ============================================================================
@@ -9,6 +44,8 @@
 \usepackage{colortbl}
 \usepackage{hhline}
 \usepackage{makecell}
+
+\usepackage{listings}
 
 % ============================================================================
 % 布局和页面设置
@@ -36,3 +73,19 @@
 % CJK 中文支持 (XeLaTeX)
 % ============================================================================
 \usepackage[BoldFont, SlantFont]{xeCJK}
+
+
+\usepackage{xcolor}
+\lstset{
+    xleftmargin={2em},
+    xrightmargin={2em},
+    numbers=none,
+    numberstyle=\small,
+    basicstyle=\footnotesize\ttfamily, % 字体选择
+    breaklines=true,      % 设定LaTeX对过长的代码行进行自动换行
+    extendedchars=true,  % 解决代码跨页时，章节标题、页眉页脚的汉字无法正常显示的问题
+    keywordstyle=\color{blue!70},
+    commentstyle=\ttfamily\color{green!40!black}, % 设定注释部分字体为等宽字体
+    frame=none,           % 背景边框
+    rulesepcolor=\color{red!20!green!20!blue!20}
+}

@@ -4,7 +4,7 @@ use Test::More;
 use File::Temp qw(tempfile);
 use YAML qw(Dump);
 
-use_ok('Fexport::Config', qw(load_config merge_config));
+use_ok('Fexport::Config', qw(load_config merge_config get_format_config));
 
 # Test load_config
 {
@@ -44,6 +44,27 @@ use_ok('Fexport::Config', qw(load_config merge_config));
     is($merged->{keep}, 0, 'Defaults preserved if not set (default keep=0)');
     is($merged->{pandoc}->{cmd}, 'file_cmd', 'File config nested key preserved');
     is_deeply($merged->{pandoc}->{filters}, ['f1'], 'File config nested array preserved');
+}
+
+# Test get_format_config
+{
+    my $html_config = get_format_config('html');
+    ok( ref $html_config eq 'HASH',        'get_format_config returns a hashref for html' );
+    is( $html_config->{ext}, 'html',       'html format ext is html' );
+    ok( exists $html_config->{'highlight-style'}, 'html has highlight-style key' );
+
+    my $unknown = get_format_config('_nonexistent_format_xyz');
+    is_deeply( $unknown, {}, 'unknown format returns empty hash' );
+}
+
+# Test merge_config populates format_opts
+{
+    my $merged = merge_config( {}, { to => 'html' } );
+    ok( defined $merged->{format_opts},              'merge_config populates format_opts when to is set' );
+    is( $merged->{format_opts}{ext}, 'html',         'format_opts contains ext for html' );
+
+    my $merged_no_to = merge_config( {}, {} );
+    ok( !defined $merged_no_to->{format_opts},       'format_opts absent when no to is set' );
 }
 
 done_testing();

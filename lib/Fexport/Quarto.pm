@@ -19,6 +19,7 @@ use IPC::Cmd             qw(can_run);
 use Cwd                  qw(getcwd);
 use Cwd                  qw(getcwd);
 use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview);
+use Fexport::Config      qw(get_format_config);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 use Term::ANSIColor      qw(:constants);
 use IPC::Run3            qw(run3);
@@ -92,26 +93,7 @@ sub render_qmd {
 
 sub _load_format_config {
   my ($outformat) = @_;
-
-  my $config_file   = find_resource("defaults.yaml");
-  my $all_options   = -e $config_file ? LoadFile($config_file) : {};
-  my $format_config = $all_options->{$outformat} // {};
-
-  # 设置 FEXPORT_SHARE 环境变量，指向 share 目录
-  my $share_dir = path($config_file)->parent->stringify;
-  local $ENV{FEXPORT_SHARE} = $share_dir;
-
-  # 展开环境变量
-  _substitute_env($format_config);
-
-  # 处理 from-extensions: 将扩展列表转换为 from 字符串
-  if ( my $extensions = delete $format_config->{'from-extensions'} ) {
-    if ( ref $extensions eq 'ARRAY' && @$extensions ) {
-      $format_config->{from} = 'markdown+' . join( '+', @$extensions );
-    }
-  }
-
-  return $format_config;
+  return get_format_config($outformat);
 }
 
 sub _extract_pandoc_options {
@@ -435,36 +417,6 @@ sub _process_docx_output {
 # ============================================================================
 # 通用工具函数
 # ============================================================================
-
-sub _substitute_env {
-  my ($data) = @_;
-  return unless defined $data;
-
-  my $ref = ref $data;
-
-  # Handle scalar: substitute environment variables in-place
-  # Matches $VAR or ${VAR} and replaces with ENV value or empty string
-  if ( !$ref ) {
-    $_[0] =~ s/\$\{?(\w+)\}?/exists $ENV{$1} ? $ENV{$1} : ''/eg;
-  }
-
-  # Handle hash: recursively substitute values
-  elsif ( $ref eq 'HASH' ) {
-    _substitute_env($_) for values %$data;
-  }
-
-  # Handle array: recursively substitute elements
-  elsif ( $ref eq 'ARRAY' ) {
-    _substitute_env($_) for @$data;
-  }
-
-  # Handle scalar reference: dereference and substitute
-  elsif ( $ref eq 'SCALAR' ) {
-    _substitute_env($$data);
-  }
-
-  return;
-}
 
 sub _merge_yaml {
   my ( $dest, $src ) = @_;

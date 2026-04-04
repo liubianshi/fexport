@@ -164,9 +164,10 @@ if ( $workdir->stringify ne path(".")->absolute->stringify ) {
 my @pandoc_cmd = build_cmd(
   $opts->{pandoc},
   {
-    from      => $opts->{from},
-    verbose   => $opts->{verbose},
-    user_opts => $opts->{pandoc_opts}
+    from        => $opts->{from},
+    verbose     => $opts->{verbose},
+    user_opts   => $opts->{pandoc_opts},
+    format_opts => $opts->{format_opts},
   }
 );
 

@@ -14,8 +14,8 @@ use File::ShareDir qw(dist_file);
 use FindBin        qw($RealBin);
 use Digest::MD5    qw(md5_hex);
 use File::Spec;
-use POSIX    qw(setsid);
-use IPC::Cmd qw(can_run);
+use POSIX           qw(setsid);
+use IPC::Cmd        qw(can_run);
 use Term::ANSIColor qw(:constants);
 $Term::ANSIColor::AUTORESET = 1;
 
@@ -301,9 +301,9 @@ sub stop_browser_preview {
     if ( $pid && kill( 0, $pid ) ) {
       push @active_previews,
         {
-        pid      => $pid,
-        path     => $path,
-        pid_file => $pid_file
+          pid      => $pid,
+          path     => $path,
+          pid_file => $pid_file
         };
     }
     else {
