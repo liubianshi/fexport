@@ -126,7 +126,7 @@ if ( @input_files > 1 ) {
 # or default input behavior may apply depending on the application design.
 
 my $infile_raw = $input_files[0];
-my $cwd_raw    = decode_utf8(getcwd());
+my $cwd_raw    = decode_utf8( getcwd() );
 
 # Use passthrough_args as pandoc_opts
 $cli{pandoc_opts} = \@passthrough_args;
@@ -317,7 +317,7 @@ my $clean_path = $final_out->exists ? $final_out->realpath : $final_out->absolut
 
 # 转为相对于原始 CWD 的路径 (仅当在当前目录下时显示相对路径)
 my $display_out =
-    path($cwd_raw)->subsumes($clean_path)
+  path($cwd_raw)->subsumes($clean_path)
   ? $clean_path->relative($cwd_raw)
   : $clean_path->absolute;
 

@@ -29,6 +29,11 @@ sub _load_defaults {
   # 提取 _defaults 部分作为 fexport 默认值基础
   my $fexport_defaults = delete $raw->{_defaults} // {};
 
+  # 提取格式特定配置 (不以 _ 开头且不是 pandoc 的顶级 key 均视为格式配置)
+  my $share_dir = path($defaults_file)->parent->realpath->stringify;
+  local $ENV{FEXPORT_SHARE} = $share_dir;
+  _substitute_env($raw);
+
   # 提取 pandoc 配置
   my $pandoc_config = $raw->{pandoc} // {};
 
@@ -42,10 +47,8 @@ sub _load_defaults {
   $fexport_defaults->{pandoc} = $pandoc_config if %$pandoc_config;
 
   # 提取格式特定配置 (不以 _ 开头且不是 pandoc 的顶级 key 均视为格式配置)
-  my $share_dir = path($defaults_file)->parent->stringify;
   for my $fmt ( grep { !/^_/ && $_ ne 'pandoc' } keys %$raw ) {
-    $FORMAT_RAW{$fmt} = { %{ $raw->{$fmt} } };                # shallow copy
-    $FORMAT_RAW{$fmt}{_share_dir} = $share_dir;
+    $FORMAT_RAW{$fmt} = { %{ $raw->{$fmt} } };    # shallow copy
   }
 
   # Convert hyphenated keys to underscored keys recursively
@@ -143,15 +146,10 @@ sub _process_format_config {
   my ($format) = @_;
   return {} unless exists $FORMAT_RAW{$format};
 
-  my $copy      = dclone( $FORMAT_RAW{$format} );
-  my $share_dir = delete $copy->{_share_dir} // '';
+  my $copy = dclone( $FORMAT_RAW{$format} );
 
   # 展开 YAML 合并键 (YAML::XS 对多个 << 的处理不完整)
   _expand_merge_keys($copy);
-
-  # 临时设置 FEXPORT_SHARE，供环境变量展开使用
-  local $ENV{FEXPORT_SHARE} = $share_dir;
-  _substitute_env($copy);
 
   # 将 from-extensions 数组转换为 pandoc from 字符串
   if ( my $extensions = delete $copy->{'from-extensions'} ) {

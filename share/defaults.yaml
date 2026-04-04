@@ -1,5 +1,4 @@
-# fexport 统一配置文件
-# 包含: fexport 默认值、Pandoc 设置、格式特定配置
+# fexport 统一配置文件 — 默认值、Pandoc 设置、格式特定配置
 
 # ============================================================================
 # fexport 默认设置
@@ -17,6 +16,7 @@ _defaults:
 
 pandoc:
   cmd: "pandoc +RTS -M512M -RTS"
+  # 识别为 Markdown 的文件扩展名
   markdown-exts:
     - md
     - markdown
@@ -26,18 +26,18 @@ pandoc:
     - quarto
   filters:
     - "--filter=pandoc-crossref"
-    - "--lua-filter=rm-test-table-line.lua"
+    - "--lua-filter=${FEXPORT_SHARE}/filters/rm-test-table-line.lua"
     - "--citeproc"
-    - "--lua-filter=rsbc.lua"
+    - "--lua-filter=${FEXPORT_SHARE}/filters/rsbc.lua"
   user-opts: []
 
 # ============================================================================
-# 共享配置 (使用 YAML 锚点)
+# 共享配置 (YAML 锚点)
 # ============================================================================
 
-# Markdown 扩展配置
+# Markdown 扩展
 _markdown:
-  # 基础扩展列表 (用于 from-extensions)
+  # 基础扩展 (from-extensions 用)
   extensions: &md_extensions
     - emoji
     - east_asian_line_breaks
@@ -46,7 +46,7 @@ _markdown:
     - lists_without_preceding_blankline
     - wikilinks_title_before_pipe
 
-  # TeX 格式额外扩展 (包含 raw_tex)
+  # TeX 格式额外增加 raw_tex
   tex_extensions: &md_tex_extensions
     - emoji
     - east_asian_line_breaks
@@ -58,42 +58,31 @@ _markdown:
 
 # 字体配置
 _fonts:
-  # 中文字体 (CJK)
-  cjk_default: &cjk_fonts
-    CJKmainfont: "LXGW WenKai"
-    CJKsansfont: "Source Han Sans CN"
-    CJKmonofont: "LXGW WenKai Mono"
-
-  cjk_serif: &cjk_serif_fonts
-    CJKmainfont: "Source Han Serif CN"
-    CJKsansfont: "Source Han Sans CN"
-    CJKmonofont: "LXGW WenKai Mono"
-
-  cjk_beamer: &cjk_beamer_fonts
+  # CJK 字体 (所有格式通用)
+  cjk: &cjk_fonts
     CJKmainfont: "方正聚珍新仿简体"
     CJKsansfont: "Source Han Sans CN"
     CJKmonofont: "LXGW WenKai Mono"
 
-  # 西文字体
-  western_default: &western_fonts
+  # 西文字体 (正文/PDF/TeX)
+  western: &western_fonts
     mainfont: "Times New Roman"
     sansfont: "Source Han Sans CN"
     monofont: "FiraCode Nerd Font Mono"
     mathfont: "DejaVu Math TeX Gyre"
 
+  # 西文字体 (Beamer 专用) — 已定义但尚未接入 beamer_vars，待启用
   western_beamer: &western_beamer_fonts
     mainfont: "P052 Roman"
     sansfont: "Noto Sans"
     monofont: "Fira Code"
 
-# 参考文献配置
+# 参考文献 (biblatex)
 _bibliography:
   biblatex: &biblatex_opts
     biblio-style: "gb7714-2015ay"
     biblio-title: "参考文献"
-    biblatexoptions:
-      - "backend=biber"
-      - "gbnamefmt=familyahead"
+    biblatexoptions: "backend=biber,gbnamefmt=familyahead"
 
 # 通用 metadata
 _metadata:
@@ -103,51 +92,20 @@ _metadata:
     link-citations: true
 
 # 组合变量锚点
-# 将多个字体/参考文献锚点展开为单一锚点，避免 YAML 解析器对多 << 支持不一致的问题
+# 依赖 YAML 1.1 多 << 合并语义 (PyYAML 默认支持，strictyaml/1.2 不支持)
+# pdf/tex/beamer 当前相同，保留独立锚点便于后续差异化
 _variables:
-  pdf: &pdf_vars
-    CJKmainfont: LXGW WenKai
-    CJKsansfont: Source Han Sans CN
-    CJKmonofont: LXGW WenKai Mono
-    mainfont: Times New Roman
-    sansfont: Source Han Sans CN
-    monofont: FiraCode Nerd Font Mono
-    mathfont: DejaVu Math TeX Gyre
-    biblio-style: "gb7714-2015ay"
-    biblio-title: "参考文献"
-    biblatexoptions:
-      - "backend=biber"
-      - "gbnamefmt=familyahead"
-
   tex: &tex_vars
-    CJKmainfont: Source Han Serif CN
-    CJKsansfont: Source Han Sans CN
-    CJKmonofont: LXGW WenKai Mono
-    mainfont: Times New Roman
-    sansfont: Source Han Sans CN
-    monofont: FiraCode Nerd Font Mono
-    mathfont: DejaVu Math TeX Gyre
-    biblio-style: "gb7714-2015ay"
-    biblio-title: "参考文献"
-    biblatexoptions:
-      - "backend=biber"
-      - "gbnamefmt=familyahead"
+    <<: [*cjk_fonts, *western_fonts, *biblatex_opts]
+    indent: true
 
   beamer: &beamer_vars
-    CJKmainfont: 方正聚珍新仿简体
-    CJKsansfont: Source Han Sans CN
-    CJKmonofont: LXGW WenKai Mono
-    mainfont: P052 Roman
-    sansfont: Noto Sans
-    monofont: Fira Code
+    <<: [*cjk_fonts, *western_fonts, *biblatex_opts]
 
 # ============================================================================
 # 格式特定配置
-# 每个格式包含:
-#   - ext: 最终输出扩展名
-#   - intermediate/intermediate_ext: 多步转换的中间格式
-#   - from-extensions: Markdown 扩展列表 (自动构建 from 字符串)
-#   - 其他: Pandoc/Quarto 选项
+# ext: 输出扩展名 | intermediate(_ext): 多步转换中间格式
+# from-extensions: 自动构建 Pandoc --from 字符串的 Markdown 扩展列表
 # ============================================================================
 
 beamer:
@@ -155,12 +113,11 @@ beamer:
   intermediate: latex
   intermediate_ext: tex
   from-extensions: *md_extensions
-  highlight-style: "pygments"
-  template: beamer-diy
+  syntax-highlighting: "pygments"
   pdf-engine: xelatex
-  bibliography: "${HOME}/Documents/paper_ref.bib"
   slide-level: 2
   citeproc: true
+  template: "${FEXPORT_SHARE}/templates/beamer-diy"
   include-in-header:
     - "${FEXPORT_SHARE}/header.tex"
     - "${FEXPORT_SHARE}/beamerheader.tex"
@@ -172,16 +129,13 @@ beamer:
     toc: false
     toc-title: "主要内容"
     toc-depth: 1
-    biblio-style: gb7714-2015ay
-    bibliography: "${HOME}/Documents/paper_ref.bib"
 
 docx:
   ext: docx
   from-extensions: *md_extensions
-  highlight-style: pygments
-  reference-doc: ${HOME}/.pandoc/templates/economic-research-china.docx
-  bibliography: ${HOME}/Documents/url_ref.bib
-  csl: ${HOME}/.pandoc/china-national-standard-gb-t-7714-2015-author-date.csl
+  syntax-highlighting: pygments
+  reference-doc: ${FEXPORT_SHARE}/templates/economic-research-china.docx
+  csl: ${FEXPORT_SHARE}/china-national-standard-gb-t-7714-2015-author-date.csl
   metadata:
     link-citations: false
 
@@ -190,11 +144,10 @@ html:
   from-extensions: *md_extensions
   to: html
   template: normal
-  highlight-style: pygments
+  syntax-highlighting: pygments
   html-math-method:
     method: katex
   embed-resources: false
-  bibliography: ${HOME}/Documents/paper_ref.bib
   metadata:
     reference-section-title: "参考文献"
     link-citations: true
@@ -206,59 +159,49 @@ pdf:
   metadata:
     <<: *chinese_meta
   from-extensions: *md_extensions
-  highlight-style: "pygments"
-  template: "eisvogel"
+  syntax-highlighting: "pygments"
+  template: ${FEXPORT_SHARE}/templates/eisvogel.latex
   listings: true
   pdf-engine: xelatex
-  bibliography: "${HOME}/Documents/paper_ref.bib"
   citeproc: true
   include-in-header:
     - "${FEXPORT_SHARE}/header.tex"
   variables:
-    <<: *pdf_vars
-    indent: true
+    <<: *tex_vars
 
 pptx:
   ext: pptx
   from-extensions: *md_extensions
   to: pptx
   citeproc: true
-  highlight-style: pygments
-  reference-doc: ${HOME}/.pandoc/templates/custom-reference.pptx
-  bibliography: ${HOME}/Documents/paper_ref.bib
-  csl: ${HOME}/.pandoc/china-national-standard-gb-t-7714-2015-author-date.csl
+  syntax-highlighting: pygments
+  reference-doc: ${FEXPORT_SHARE}/templates/custom-reference.pptx
+  csl: ${FEXPORT_SHARE}/china-national-standard-gb-t-7714-2015-author-date.csl
   metadata:
     reference-section-title: "参考文献"
     link-citations: true
 
+# tex 与 latex 当前配置相同，保留独立条目供格式处理逻辑区分
 tex:
   ext: tex
   metadata:
-    author: ["罗伟"]
-    reference-section-title: "参考文献"
-    link-citations: true
+    <<: *chinese_meta
   from-extensions: *md_tex_extensions
-  highlight-style: "pygments"
-  template: eisvogel
+  syntax-highlighting: "pygments"
+  template: ${FEXPORT_SHARE}/templates/eisvogel.latex
   listings: true
   pdf-engine: xelatex
-  bibliography: "${HOME}/Documents/paper_ref.bib"
   variables:
     <<: *tex_vars
-    indent: true
-    listings: true
 
 latex:
   ext: tex
   metadata:
     <<: *chinese_meta
   from-extensions: *md_tex_extensions
-  highlight-style: "pygments"
-  template: eisvogel
+  syntax-highlighting: "pygments"
+  template: ${FEXPORT_SHARE}/templates/eisvogel.latex
   listings: true
   pdf-engine: xelatex
-  bibliography: "${HOME}/Documents/paper_ref.bib"
   variables:
     <<: *tex_vars
-    indent: true
-    listings: true

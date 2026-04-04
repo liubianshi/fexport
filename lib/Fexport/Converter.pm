@@ -88,6 +88,8 @@ sub _to_pdf {
   postprocess_latex( \@tex_contents );
   save_lines( \@tex_contents, $tex_file );
 
+  system "cp", $tex_file, "/tmp/test.tex";
+
   # 4. 运行 latexmk
   # 使用 run3 替代 system，便于测试 mock 和捕获输出
   my @latexmk_cmd = (

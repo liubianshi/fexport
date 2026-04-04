@@ -58,11 +58,12 @@ sub run_pandoc {
   # 3. 安全执行命令 (IPC::Run3)
   # 捕获 STDERR 到 scalar (字节)，然后手动写入 log，避免 IPC::Run3 直接写 handle 可能的 warn
   my $stderr_bytes;
+  push @$cmd_ref, "--verbose";
 
-  run3 $cmd_ref, \$stdin_data, \undef, \$stderr_bytes;
-
-  if ( $log_fh && defined $stderr_bytes ) {
-    print {$log_fh} $stderr_bytes;
+  my $stdout_bytes;
+  run3 $cmd_ref, \$stdin_data, \$stdout_bytes, \$stderr_bytes;
+  if ( defined $stdout_bytes ) {
+    print $stdout_bytes;
   }
 
   # 4. 错误检查
@@ -70,6 +71,7 @@ sub run_pandoc {
 
     # $? >> 8 获取真实退出码
     my $exit_code = $? >> 8;
+    print $stderr_bytes;
     die "Error: Pandoc exited with code $exit_code. Check logs for details.\n";
   }
 

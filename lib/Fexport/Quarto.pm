@@ -254,16 +254,14 @@ sub _build_quarto_command {
   push @cmd, "--quiet" unless $verbose;
 
   # Add Lua filters for document processing
-  if ( $quarto_target eq 'docx' ) {
-    push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify;
+  my $docx_embeded_table_filter = find_resource("quarto_docx_embeded_table.lua");
+  if ( $quarto_target eq 'docx' && $docx_embeded_table_filter && -e $docx_embeded_table_filter ) {
+    push @cmd, "--lua-filter", $docx_embeded_table_filter;
   }
 
   my $rsbc_filter = find_resource("rsbc.lua");
   if ( $rsbc_filter && -e $rsbc_filter ) {
     push @cmd, "--lua-filter", $rsbc_filter;
-  }
-  else {
-    push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/rsbc.lua")->stringify;
   }
 
   # Explicitly pass pdf-engine if specified in metadata
