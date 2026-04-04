@@ -8,6 +8,9 @@ use YAML::XS qw(LoadFile);
 use Path::Tiny;
 use Storable qw(dclone);
 
+# 全局配置 YAML::XS，确保整个应用行为一致
+$YAML::XS::Unicode = 1;
+
 our @EXPORT_OK = qw(load_config merge_config process_params get_format_config);
 
 use Fexport::Util qw(find_resource);
@@ -116,8 +119,6 @@ sub load_config {
   # 增加 -f 判断确保是文件
   return {} unless -f $file;
 
-  # eval 捕获异常是个好习惯
-  local $YAML::XS::Unicode = 1;
   my $config = eval { LoadFile($file) };
   if ($@) {
     warn "[Warn] Failed to load config file '$file': $@";

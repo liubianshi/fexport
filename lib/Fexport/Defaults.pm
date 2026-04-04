@@ -3,22 +3,21 @@ package Fexport::Defaults;
 use v5.20;
 use strict;
 use warnings;
+use utf8;
 use Exporter 'import';
 use JSON::PP;
+use Path::Tiny;
 use Fexport::Util qw(find_resource);
 
 our @EXPORT_OK = qw(get_defaults);
 
 sub get_defaults {
 
-  # Dynamically find the share directory
-  my $share_dir = find_resource('header.tex');
-  if ($share_dir) {
-    $share_dir =~ s{/header\.tex$}{};
-  }
-  else {
-    $share_dir = $ENV{FEXPORT_SHARE} // '/usr/local/share/fexport';
-  }
+  # 动态定位资源目录 (优先使用环境变量，否则通过 header.tex 定位并规范化路径)
+  my $share_dir = $ENV{FEXPORT_SHARE} // do {
+    my $res = find_resource('header.tex') or die "Error: Resource 'header.tex' not found. Is fexport installed correctly?\n";
+    path($res)->parent->realpath->stringify;
+  };
 
   my $true  = JSON::PP::true;
   my $false = JSON::PP::false;

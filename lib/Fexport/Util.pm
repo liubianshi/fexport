@@ -57,10 +57,7 @@ sub run_pandoc {
 
   # 3. 安全执行命令 (IPC::Run3)
   # 捕获 STDERR 到 scalar (字节)，然后手动写入 log，避免 IPC::Run3 直接写 handle 可能的 warn
-  my $stderr_bytes;
-  push @$cmd_ref, "--verbose";
-
-  my $stdout_bytes;
+  my ( $stderr_bytes, $stdout_bytes );
   run3 $cmd_ref, \$stdin_data, \$stdout_bytes, \$stderr_bytes;
   if ( defined $stdout_bytes ) {
     binmode STDOUT;    # 临时切回二进制模式打印原始字节
