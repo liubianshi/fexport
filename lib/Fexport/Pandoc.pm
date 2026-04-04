@@ -6,87 +6,33 @@ use warnings;
 use Exporter 'import';
 use List::Util       qw(any);
 use Text::ParseWords qw(shellwords);    # 核心模块，用于解析命令行字符串
+use YAML::XS         qw(Dump);
+use Encode           qw(decode_utf8 is_utf8 encode_utf8);
+use File::Temp       qw(tempfile);
 
 our @EXPORT_OK = qw(build_cmd);
 
 # fexport 内部 key，不传给 pandoc
-my %FEXPORT_ONLY = map { $_ => 1 } qw(ext intermediate intermediate_ext from-extensions from _share_dir);
+my %FEXPORT_ONLY =
+  map { $_ => 1 } qw(ext intermediate intermediate_ext from-extensions from);
 
-# 将格式配置 hashref 转换为 pandoc CLI 参数列表
-sub _format_opts_to_args {
-  my ($format_opts) = @_;
-  return () unless ref $format_opts eq 'HASH';
-
-  my @args;
-  for my $key ( sort keys %$format_opts ) {
-    next if $FEXPORT_ONLY{$key};
-    my $val = $format_opts->{$key};
-    next unless defined $val;
-
-    if ( $key eq 'variables' || $key eq 'variable' ) {
-
-      # -V key=value 形式
-      if ( ref $val eq 'HASH' ) {
-        for my $k ( sort keys %$val ) {
-          my $v = $val->{$k};
-          if ( ref $v eq 'ARRAY' ) {
-
-            # 数组值以逗号连接 (适用于 biblatexoptions 等)
-            push @args, '-V', "$k=" . join( ',', @$v );
-          }
-          elsif ( defined $v ) {
-            push @args, '-V', "$k=$v";
-          }
-        }
-      }
-    }
-    elsif ( $key eq 'metadata' ) {
-
-      # -M key=value 形式，跳过数组/哈希值 (应在文档 frontmatter 中设置)
-      if ( ref $val eq 'HASH' ) {
-        for my $k ( sort keys %$val ) {
-          my $v = $val->{$k};
-          next if ref $v;    # 跳过复杂类型
-          push @args, '-M', defined($v) ? "$k=$v" : $k;
-        }
-      }
-    }
-    elsif ( $key eq 'html-math-method' ) {
-
-      # {method: katex} -> --html-math-method=katex
-      if ( ref $val eq 'HASH' && defined $val->{method} ) {
-        push @args, "--html-math-method", $val->{method};
-      }
-      elsif ( !ref $val ) {
-        push @args, "--html-math-method", $val;
-      }
-    }
-    elsif ( ref $val eq 'ARRAY' ) {
-
-      # 重复选项：--key value1  --key value2 ...
-      for my $item (@$val) {
-        push @args, "--$key", $item;
-      }
-    }
-    elsif ( ref $val eq '' ) {
-
-      # 标量：布尔值只传 flag，其余传 --key value
-      if ( $val eq '1' || $val eq 'true' ) {
-        push @args, "--$key";
-      }
-      elsif ( $val eq '0' || $val eq 'false' || $val eq '' ) {
-
-        # 假值：不传
-      }
-      else {
-        push @args, "--$key", $val;
-      }
-    }
-
-    # HASH (非特殊 key) 暂不处理
+# 辅助函数：确保结构内所有字符串都是 Unicode 字符（带有 UTF8 flag）
+# 防止 YAML::XS 将原始字节误认为 Latin-1 导致二次编码乱码（如 ç½...）
+sub _normalize_internal {
+  my ($data) = @_;
+  return $data unless defined $data;
+  if ( ref $data eq 'HASH' ) {
+    return { map { $_ => _normalize_internal($data->{$_}) } keys %$data };
   }
-
-  return @args;
+  elsif ( ref $data eq 'ARRAY' ) {
+    return [ map { _normalize_internal($_) } @$data ];
+  }
+  elsif ( ref $data eq '' ) {
+    return $data if is_utf8($data);
+    # 如果字符串包含非 ASCII 字符但没有 flag，手动补全解码
+    return decode_utf8($data);
+  }
+  return $data;
 }
 
 sub build_cmd {
@@ -123,15 +69,46 @@ sub build_cmd {
     ? @{ $params->{user_opts} }
     : shellwords( $params->{user_opts} // '' );
 
-  # 4. 格式配置转 CLI 参数 (优先级低于用户配置和 CLI)
-  my @format_args = _format_opts_to_args( $params->{format_opts} );
+  # 4. 格式配置转临时 defaults 文件
+  my $defaults_file;
+  if ( my $format_opts = $params->{format_opts} ) {
+    my %pandoc_defaults;
+    for my $key ( keys %$format_opts ) {
+      next if $FEXPORT_ONLY{$key};
+      $pandoc_defaults{$key} = $format_opts->{$key};
+    }
+
+    if ( keys %pandoc_defaults ) {
+      my ( $fh, $filename ) = tempfile( "fexport-pandoc-defaults-XXXXXX", TMPDIR => 1, SUFFIX => '.yaml', UNLINK => 1 );
+      binmode $fh; # 原始字节写入
+
+      # 配置 YAML::XS
+      local $YAML::XS::Boolean = "JSON::PP";
+      local $YAML::XS::Unicode = 0; # Dump 返回编码后的 UTF-8 字节流
+
+      # 确保所有内容都有 UTF8 flag，防止二次编码
+      my $normalized = _normalize_internal( \%pandoc_defaults );
+
+      my $yaml_bytes = Dump($normalized);
+      print $fh $yaml_bytes;
+      close $fh;
+      $defaults_file = $filename;
+
+      if ( $params->{verbose} ) {
+        # 调试输出：将字节流解码为字符打印
+        my $readable = $yaml_bytes;
+        utf8::decode($readable);
+        warn "[Debug] Generated Pandoc Defaults ($filename):\n$readable\n";
+      }
+    }
+  }
 
   # 5. 构建最终命令列表
-  my @cmd = (
-    @base_cmd,
-    '--from', $input_fmt,
-    @{ $config->{filters} // [] },
-    @format_args,    # 格式默认值 (最低优先级)
+  my @cmd = ( @base_cmd, '--from', $input_fmt, @{ $config->{filters} // [] }, );
+
+  push @cmd, "--defaults", $defaults_file if $defaults_file;
+
+  push @cmd, (
     @config_opts,    # 配置文件中的选项
     @cli_opts,       # CLI 选项 (最高优先级)
   );

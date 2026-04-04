@@ -63,6 +63,7 @@ sub run_pandoc {
   my $stdout_bytes;
   run3 $cmd_ref, \$stdin_data, \$stdout_bytes, \$stderr_bytes;
   if ( defined $stdout_bytes ) {
+    binmode STDOUT;    # 临时切回二进制模式打印原始字节
     print $stdout_bytes;
   }
 

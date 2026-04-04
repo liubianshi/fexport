@@ -12,47 +12,20 @@ our @EXPORT_OK = qw(load_config merge_config process_params get_format_config);
 
 use Fexport::Util qw(find_resource);
 
-# Raw format sections from defaults.yaml (populated by _load_defaults, keyed by format name)
+use Fexport::Defaults qw(get_defaults);
+
+# Raw format sections from defaults (populated by _load_defaults, keyed by format name)
 my %FORMAT_RAW;
 
-# Load Global Defaults from YAML file
+# Load Global Defaults from Fexport::Defaults
 sub _load_defaults {
-  my $defaults_file = find_resource("defaults.yaml");
-  return {} unless defined $defaults_file && -f $defaults_file;
+  my $raw = get_defaults();
 
-  my $raw = eval { LoadFile($defaults_file) };
-  if ($@) {
-    warn "[Warn] Failed to load defaults file: $@";
-    return {};
-  }
+  # 提取格式特定配置 (保持原样，通常为连字符，直接用于 Pandoc --defaults)
+  %FORMAT_RAW = %{ $raw->{formats} // {} };
 
-  # 提取 _defaults 部分作为 fexport 默认值基础
-  my $fexport_defaults = delete $raw->{_defaults} // {};
-
-  # 提取格式特定配置 (不以 _ 开头且不是 pandoc 的顶级 key 均视为格式配置)
-  my $share_dir = path($defaults_file)->parent->realpath->stringify;
-  local $ENV{FEXPORT_SHARE} = $share_dir;
-  _substitute_env($raw);
-
-  # 提取 pandoc 配置
-  my $pandoc_config = $raw->{pandoc} // {};
-
-  # 从 _markdown.extensions 构建 markdown-fmt 字符串
-  my $extensions = $raw->{_markdown}{extensions};
-  my @exts_list  = ( defined $extensions && ref($extensions) eq 'ARRAY' ) ? @$extensions : ();
-
-  $pandoc_config->{'markdown-fmt'} = join( '+', 'markdown', @exts_list );
-
-  # 合并: fexport 默认值 + pandoc 配置
-  $fexport_defaults->{pandoc} = $pandoc_config if %$pandoc_config;
-
-  # 提取格式特定配置 (不以 _ 开头且不是 pandoc 的顶级 key 均视为格式配置)
-  for my $fmt ( grep { !/^_/ && $_ ne 'pandoc' } keys %$raw ) {
-    $FORMAT_RAW{$fmt} = { %{ $raw->{$fmt} } };    # shallow copy
-  }
-
-  # Convert hyphenated keys to underscored keys recursively
-  return _convert_keys($fexport_defaults);
+  # 返回全局配置并转换 key (连字符 -> 下划线，方便 Perl 内部逻辑使用)
+  return _convert_keys( $raw->{global} // {} );
 }
 
 sub _convert_keys {
@@ -83,62 +56,6 @@ sub _get_defaults {
   return $DEFAULTS;
 }
 
-# 展开字符串中的环境变量 ($VAR 或 ${VAR})
-sub _substitute_env {
-  my ($data) = @_;
-  return unless defined $data;
-
-  my $ref = ref $data;
-
-  if ( !$ref ) {
-    $_[0] =~ s/\$\{?(\w+)\}?/exists $ENV{$1} ? $ENV{$1} : ''/eg;
-  }
-  elsif ( $ref eq 'HASH' ) {
-    _substitute_env($_) for values %$data;
-  }
-  elsif ( $ref eq 'ARRAY' ) {
-    _substitute_env($_) for @$data;
-  }
-  elsif ( $ref eq 'SCALAR' ) {
-    _substitute_env($$data);
-  }
-
-  return;
-}
-
-# 展开 YAML 合并键 (<<)，处理多个 << 的情况
-# YAML::XS 在遇到多个 << 时只保留最后一个为字面 key，需要手动展开
-sub _expand_merge_keys {
-  my ($data) = @_;
-  return $data unless ref $data;
-
-  if ( ref $data eq 'HASH' ) {
-    if ( exists $data->{'<<'} ) {
-      my $merge_src = delete $data->{'<<'};
-      if ( ref $merge_src eq 'HASH' ) {
-        for my $k ( keys %$merge_src ) {
-          $data->{$k} //= $merge_src->{$k};
-        }
-      }
-      elsif ( ref $merge_src eq 'ARRAY' ) {
-        for my $src (@$merge_src) {
-          if ( ref $src eq 'HASH' ) {
-            for my $k ( keys %$src ) {
-              $data->{$k} //= $src->{$k};
-            }
-          }
-        }
-      }
-    }
-    _expand_merge_keys($_) for values %$data;
-  }
-  elsif ( ref $data eq 'ARRAY' ) {
-    _expand_merge_keys($_) for @$data;
-  }
-
-  return $data;
-}
-
 # 格式配置缓存
 my %FORMAT_CONFIG_CACHE;
 
@@ -147,9 +64,6 @@ sub _process_format_config {
   return {} unless exists $FORMAT_RAW{$format};
 
   my $copy = dclone( $FORMAT_RAW{$format} );
-
-  # 展开 YAML 合并键 (YAML::XS 对多个 << 的处理不完整)
-  _expand_merge_keys($copy);
 
   # 将 from-extensions 数组转换为 pandoc from 字符串
   if ( my $extensions = delete $copy->{'from-extensions'} ) {
@@ -203,6 +117,7 @@ sub load_config {
   return {} unless -f $file;
 
   # eval 捕获异常是个好习惯
+  local $YAML::XS::Unicode = 1;
   my $config = eval { LoadFile($file) };
   if ($@) {
     warn "[Warn] Failed to load config file '$file': $@";

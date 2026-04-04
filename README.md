@@ -149,7 +149,7 @@ fexport -c ~/.fexport.yaml document.md
 
 ### 默认配置
 
-程序内置的默认配置位于 `share/defaults.yaml`，包含：
+程序内置的默认配置位于 `lib/Fexport/Defaults.pm`，包含：
 
 - 默认输出格式: HTML
 - 默认语言: 中文 (zh)
@@ -226,13 +226,13 @@ fexport/
 │   └── Fexport/
 │       ├── Config.pm     # 配置管理
 │       ├── Converter.pm  # 格式转换
+│       ├── Defaults.pm   # 默认配置
 │       ├── Pandoc.pm     # Pandoc 命令构建
 │       ├── Quarto.pm     # Quarto 处理
 │       ├── Rmd.pm        # RMarkdown 处理
 │       ├── Util.pm       # 工具函数
 │       └── PostProcess.pm # 后处理
 ├── share/
-│   └── defaults.yaml     # 默认配置
 ├── t/                    # 测试文件
 └── Makefile.PL          # 安装脚本
 ```

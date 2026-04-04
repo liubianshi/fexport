@@ -6,6 +6,10 @@ use strict;
 use warnings;
 use utf8;
 
+binmode STDOUT, ':utf8';
+binmode STDERR, ':utf8';
+binmode STDIN,  ':utf8';
+
 use FindBin;
 use lib "$FindBin::RealBin/../lib/perl5", "$FindBin::RealBin/../lib";
 
@@ -189,6 +193,7 @@ if ( $opts->{from} eq 'md' ) {
   }
   else {
     # 处理 STDIN 输入
+    binmode STDIN, ':utf8';
     @md_lines = <STDIN>;
 
     # 如果是 STDIN，process_params 会生成默认 outfile
@@ -605,7 +610,7 @@ Quarto 文档转换为 HTML、PDF、Word 等多种格式。
 
 用户配置文件 (向后兼容位置)
 
-=item F<share/defaults.yaml>
+=item F<lib/Fexport/Defaults.pm>
 
 内置默认配置文件
 
