@@ -15,7 +15,8 @@ sub get_defaults {
 
   # 动态定位资源目录 (优先使用环境变量，否则通过 header.tex 定位并规范化路径)
   my $share_dir = $ENV{FEXPORT_SHARE} // do {
-    my $res = find_resource('header.tex') or die "Error: Resource 'header.tex' not found. Is fexport installed correctly?\n";
+    my $res = find_resource('header.tex')
+      or die "Error: Resource 'header.tex' not found. Is fexport installed correctly?\n";
     path($res)->parent->realpath->stringify;
   };
 
@@ -173,6 +174,8 @@ sub get_defaults {
       lang    => "zh",
       pandoc  => {
         cmd             => "pandoc +RTS -M512M -RTS",
+        share_dir       => $share_dir,
+        "resource-path" => [],
         "markdown-exts" => [qw(md markdown rmd rmarkdown qmd quarto)],
         filters         => [
           "--filter=pandoc-crossref", "--lua-filter=$share_dir/filters/rm-test-table-line.lua",

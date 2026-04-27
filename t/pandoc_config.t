@@ -38,5 +38,22 @@ ok((grep { $_ eq '--verbose' } @$param_cmd), "Verbose flag added");
 ok((grep { $_ eq '-F' } @$param_cmd), "User opts flag -F added");
 ok((grep { $_ eq 'user-filter' } @$param_cmd), "User opts argument user-filter added");
 
+# Test --resource-path injection
+my $rp_cmd = [ build_cmd(merge_config()->{pandoc}) ];
+my ($rp_idx) = grep { $rp_cmd->[$_] eq '--resource-path' } 0..$#$rp_cmd;
+ok(defined $rp_idx, "--resource-path flag emitted by default");
+like($rp_cmd->[$rp_idx + 1], qr{share}, "resource-path includes share dir");
+
+# Test user override appends rather than replaces share_dir
+my ($fh2, $f2) = tempfile();
+print $fh2 "pandoc:\n  resource-path:\n    - /custom/path\n";
+close $fh2;
+my $cfg2 = load_config($f2);
+my $merged_cmd = [ build_cmd(merge_config($cfg2)->{pandoc}) ];
+my ($mi) = grep { $merged_cmd->[$_] eq '--resource-path' } 0..$#$merged_cmd;
+like($merged_cmd->[$mi + 1], qr{share.*:/custom/path|/custom/path.*share},
+     "user resource-path appended to share_dir");
+unlink $f2;
+
 done_testing();
 unlink $filename;

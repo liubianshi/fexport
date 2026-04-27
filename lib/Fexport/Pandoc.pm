@@ -61,7 +61,11 @@ sub build_cmd {
   }
 
   # 4. 构建最终命令列表
-  my @cmd = ( @base_cmd, '--from', $input_fmt, @{ $config->{filters} // [] } );
+  my @resource_paths = grep { defined && length }
+    $config->{share_dir}, @{ $config->{resource_path} // [] };
+  my @cmd = ( @base_cmd, '--from', $input_fmt );
+  push @cmd, '--resource-path', join( ':', @resource_paths ) if @resource_paths;
+  push @cmd, @{ $config->{filters} // [] };
   push @cmd, "--defaults", $defaults_file if $defaults_file;
   push @cmd, ( @config_opts, @cli_opts );
   if ( $params->{verbose} ) {
