@@ -97,7 +97,7 @@ sub get_defaults {
       from                  => 'markdown+' . join( '+', @$md_extensions ),
       "syntax-highlighting" => "pygments",
       "reference-doc"       => "$share_dir/templates/economic-research-china.docx",
-      csl                   => "$share_dir/china-national-standard-gb-t-7714-2015-author-date.csl",
+      # csl                   => "$share_dir/china-national-standard-gb-t-7714-2015-author-date.csl",
       metadata              => {
         "link-citations" => $false,
       },
