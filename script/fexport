@@ -27,7 +27,8 @@ $Term::ANSIColor::AUTORESET = 1;
 
 # --- Fexport Modules ---
 use Fexport::Config      qw(load_config merge_config process_params);
-use Fexport::Util        qw(run_pandoc save_lines stop_browser_preview);
+use Fexport::Util        qw(run_pandoc save_lines stop_browser_preview
+                              extract_yaml_frontmatter merge_frontmatter_into_defaults);
 use Fexport::PostProcess qw(postprocess_docx postprocess_html postprocess_latex);
 use Fexport::Rmd         qw(render_rmd);
 use Fexport::Quarto      qw(render_qmd);
@@ -106,29 +107,9 @@ if ( $workdir->stringify ne path(".")->absolute->stringify ) {
 # ==============================================================================
 # 2. 执行转换
 # ==============================================================================
-my @pandoc_cmd = build_cmd(
-  $opts->{pandoc},
-  {
-    from        => $opts->{from},
-    verbose     => $opts->{verbose},
-    user_opts   => $opts->{pandoc_opts},
-    format_opts => $opts->{format_opts},
-  }
-);
 
-my $log_file = Path::Tiny->tempfile;
-my $log_fh   = $log_file->openw;
-
-my @md_lines;
-if ( $opts->{from} eq 'md' ) {
-  if ($infile) {
-    @md_lines = $infile->lines_utf8;
-  }
-  else {
-    @md_lines = <STDIN>;
-  }
-}
-elsif ( $opts->{from} eq 'rmd' ) {
+# rmd / qmd 先于 md 处理：它们不需要 front-matter 合并步骤，直接走各自渲染器
+if ( $opts->{from} eq 'rmd' ) {
   unless ($infile) {
     my $tmp = Path::Tiny->tempfile( SUFFIX => '.Rmd' );
     $tmp->spew_utf8( join( "", <STDIN> ) );
@@ -141,6 +122,38 @@ elsif ( $opts->{from} eq 'qmd' ) {
   render_qmd( $infile, $outfile, $opts->{verbose} );
   exit 0;
 }
+
+# md 分支：先读取内容，提取并合并 YAML front-matter 到 defaults
+my @md_lines;
+my $effective_format_opts = $opts->{format_opts};
+
+if ( $opts->{from} eq 'md' ) {
+  @md_lines = $infile ? $infile->lines_utf8 : <STDIN>;
+
+  my $fm = extract_yaml_frontmatter( \@md_lines );
+  if ( ref $fm eq 'HASH' && %$fm ) {
+    $effective_format_opts =
+      merge_frontmatter_into_defaults( $opts->{format_opts}, $fm );
+    if ( $opts->{verbose} ) {
+      warn "[Debug] YAML front-matter merged into defaults: "
+        . join( ', ', sort keys %$fm ) . "\n";
+    }
+  }
+}
+
+# 用合并后的 format_opts 构建 pandoc 命令
+my @pandoc_cmd = build_cmd(
+  $opts->{pandoc},
+  {
+    from        => $opts->{from},
+    verbose     => $opts->{verbose},
+    user_opts   => $opts->{pandoc_opts},
+    format_opts => $effective_format_opts,
+  }
+);
+
+my $log_file = Path::Tiny->tempfile;
+my $log_fh   = $log_file->openw;
 
 convert(
   {

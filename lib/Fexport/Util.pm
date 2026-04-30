@@ -17,6 +17,9 @@ use File::Spec;
 use POSIX           qw(setsid);
 use IPC::Cmd        qw(can_run);
 use Term::ANSIColor qw(:constants);
+use YAML::XS        qw(Load);
+use Storable        qw(dclone);
+use List::Util      qw(uniq);
 $Term::ANSIColor::AUTORESET = 1;
 
 # 导出函数名更新
@@ -28,6 +31,8 @@ our @EXPORT_OK = qw(
   find_resource
   launch_browser_preview
   stop_browser_preview
+  extract_yaml_frontmatter
+  merge_frontmatter_into_defaults
   run3
 );
 
@@ -375,6 +380,91 @@ sub stop_browser_preview {
   }
 
   say encode_utf8( "\n" . BOLD . GREEN . "✅ Stopped $stopped_count preview server(s)." . RESET ) if $stopped_count > 0;
+}
+
+# ==============================================================================
+# 5. YAML Front Matter 提取与结构化深合并
+#    用途：让 markdown 文件 YAML 头部能正确覆盖 fexport 默认值
+# ==============================================================================
+
+# 作用：从 markdown 内容（字符串或行数组引用）中提取 YAML front matter 块
+# 返回：解析后的 hashref；若无头部、解析失败、或非 hash 顶层结构，则返回空 hashref
+# 注意：YAML::XS::Load 期望 UTF-8 字节流，故先 encode_utf8 再喂给它
+sub extract_yaml_frontmatter {
+  my ($content) = @_;
+  $content = join( '', @$content ) if ref $content eq 'ARRAY';
+
+  return {}
+    unless defined $content
+    && $content =~ /\A---\s*\n(.*?)\n(?:---|\.\.\.)\s*\n/s;
+  my $yaml_block = $1;
+
+  my $parsed = eval { Load( encode_utf8($yaml_block) ) };
+  return {} if $@ || ref $parsed ne 'HASH';
+  return $parsed;
+}
+
+# 内部：值层面的深合并（front matter 优先；array 取 uniq union；hash 递归）
+# 与 Fexport::Quarto::_merge_yaml 语义保持一致，但返回新值而非 in-place
+sub _merge_value {
+  my ( $old, $new ) = @_;
+  return $new unless defined $old;
+
+  my $r_old = ref $old || '';
+  my $r_new = ref $new || '';
+
+  if ( $r_old eq 'HASH' && $r_new eq 'HASH' ) {
+    my %merged = %$old;
+    for my $k ( keys %$new ) {
+      $merged{$k} = _merge_value( $merged{$k}, $new->{$k} );
+    }
+    return \%merged;
+  }
+  if ( $r_old eq 'ARRAY' && $r_new eq 'ARRAY' ) {
+    return [ uniq( @$old, @$new ) ];
+  }
+  return $new;    # scalar 或 类型不匹配：front-matter 胜出
+}
+
+# 作用：把扁平的 YAML front matter 投影到 defaults 的结构化层级（顶层/variables/metadata）
+# 决策顺序：
+#   1) 嵌套形式 variables: {} / metadata: {} —— 直接深合并到对应层
+#   2) defaults.variables 中已有该键 —— 合到 variables 层（保证作为显式变量起效）
+#   3) defaults.metadata 中已有该键   —— 合到 metadata 层
+#   4) defaults 顶层已有该键           —— 合到顶层（template / pdf-engine / csl 等）
+#   5) 三处都没有                       —— 安全归宿到 metadata（title / nocite 等）
+# 返回：新构造的 hashref（不修改入参）
+sub merge_frontmatter_into_defaults {
+  my ( $format_opts, $frontmatter ) = @_;
+  return $format_opts unless ref $frontmatter eq 'HASH' && %$frontmatter;
+
+  my $merged = dclone($format_opts);
+
+  for my $key ( keys %$frontmatter ) {
+    my $val = $frontmatter->{$key};
+
+    if ( ( $key eq 'variables' || $key eq 'metadata' ) && ref $val eq 'HASH' ) {
+      $merged->{$key} //= {};
+      $merged->{$key} = _merge_value( $merged->{$key}, $val );
+      next;
+    }
+
+    if ( ref $merged->{variables} eq 'HASH' && exists $merged->{variables}{$key} ) {
+      $merged->{variables}{$key} = _merge_value( $merged->{variables}{$key}, $val );
+    }
+    elsif ( ref $merged->{metadata} eq 'HASH' && exists $merged->{metadata}{$key} ) {
+      $merged->{metadata}{$key} = _merge_value( $merged->{metadata}{$key}, $val );
+    }
+    elsif ( exists $merged->{$key} ) {
+      $merged->{$key} = _merge_value( $merged->{$key}, $val );
+    }
+    else {
+      $merged->{metadata} //= {};
+      $merged->{metadata}{$key} = _merge_value( $merged->{metadata}{$key}, $val );
+    }
+  }
+
+  return $merged;
 }
 
 1;
