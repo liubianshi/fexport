@@ -33,8 +33,9 @@ subtest 'Absolute path -> workdir is parent dir' => sub {
     is(canon($wd), canon($temp_dir->child('doc')), "Workdir is input file dir");
     # check in is relative to wd (should be just filename)
     is($in, 'input.md', "Infile is relative to workdir");
-    # check out is relative to wd (should be input.html)
-    is($out, 'input.html', "Outfile is relative default in workdir");
+    # check out is absolute (returned as absolute path to avoid downstream
+    # wide-char vs byte-cwd concat issue in Path::Tiny->absolute)
+    is(canon($out), canon($temp_dir->child('doc/input.html')), "Outfile is absolute path in workdir");
 };
 
 subtest 'Relative path -> workdir is current dir' => sub {
@@ -52,8 +53,8 @@ subtest 'Relative path -> workdir is current dir' => sub {
     is(canon($wd), canon($cwd), "Workdir is current");
     
     # Expected: outdir 'dist' + basename('sub/output.html') = 'dist/output.html'
-    # Relative to workdir (cwd)
-    is($out, 'dist/output.html', "Outfile re-parented to outdir (flattened)");
+    # Returned as absolute path joined with workdir (cwd)
+    is(canon($out), canon(path($cwd)->child('dist/output.html')), "Outfile re-parented to outdir (flattened)");
 };
 
 subtest 'Absolute Outfile' => sub {
@@ -71,9 +72,8 @@ subtest 'Absolute Outfile' => sub {
     # wd is cwd (infile is relative)
     is(canon($wd), canon($cwd), "Workdir is current");
     
-    # out should be relative to wd
-    my $expected = path($abs_out)->relative($cwd)->stringify;
-    is($out, $expected, "Absolute outfile converted to relative to workdir");
+    # out should match the original absolute outfile
+    is(canon($out), canon($abs_out), "Absolute outfile preserved as absolute");
 };
 
 done_testing();

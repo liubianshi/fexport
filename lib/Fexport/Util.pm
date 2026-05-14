@@ -9,6 +9,7 @@ use Exporter 'import';
 # 核心依赖
 # 核心依赖
 use IPC::Run3 qw(run3);
+use IO::Handle;    # syswrite 前用 ->flush 防止与缓冲 print 乱序
 use Path::Tiny;
 use File::ShareDir qw(dist_file);
 use FindBin        qw($RealBin);
@@ -64,9 +65,13 @@ sub run_pandoc {
   # 捕获 STDERR 到 scalar (字节)，然后手动写入 log，避免 IPC::Run3 直接写 handle 可能的 warn
   my ( $stderr_bytes, $stdout_bytes );
   run3 $cmd_ref, \$stdin_data, \$stdout_bytes, \$stderr_bytes;
-  if ( defined $stdout_bytes ) {
-    binmode STDOUT;    # 临时切回二进制模式打印原始字节
-    print $stdout_bytes;
+
+  # 用 syswrite 直接写字节、绕过 PerlIO layer (主脚本 use open ':std :utf8' 会
+  # 让 STDOUT 有 :utf8 layer，print 字节会被再次编码而 mojibake)；
+  # 同时避免 binmode 永久改写 STDOUT，导致下游 print 宽字符触发 Wide character 警告
+  if ( defined $stdout_bytes && length $stdout_bytes ) {
+    STDOUT->flush;
+    syswrite STDOUT, $stdout_bytes;
   }
 
   # 4. 错误检查
@@ -74,7 +79,10 @@ sub run_pandoc {
 
     # $? >> 8 获取真实退出码
     my $exit_code = $? >> 8;
-    print $stderr_bytes;
+    if ( defined $stderr_bytes && length $stderr_bytes ) {
+      STDERR->flush;
+      syswrite STDERR, $stderr_bytes;
+    }
     die "Error: Pandoc exited with code $exit_code. Check logs for details.\n";
   }
 

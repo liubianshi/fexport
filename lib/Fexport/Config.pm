@@ -237,11 +237,11 @@ sub process_params {
     }
   }
 
-  # 5. 返回相对于 work_dir 的路径 (因为脚本后续会 chdir 到 work_dir)
-  my $rel_outfile = $abs_outfile->relative($work_dir);
-
-  # 返回字符串路径 (显式 stringify 避免对象泄露给不识别 Path::Tiny 的旧代码)
-  return ( "$work_dir", "$resolved_infile", "$rel_outfile" );
+  # 5. 返回字符串路径 (显式 stringify 避免对象泄露给不识别 Path::Tiny 的旧代码)
+  # outfile 返回绝对路径：fexport 主脚本对 cwd/ARGV 做了 decode_utf8，得到带 UTF-8
+  # flag 的宽字符串。若返回相对路径，下游 Path::Tiny->absolute() 会与 Cwd::getcwd()
+  # 的字节串拼接，触发 byte→Latin-1 升级，最终 syscall 看到双重 UTF-8 编码而 ENOENT。
+  return ( "$work_dir", "$resolved_infile", "$abs_outfile" );
 }
 
 sub _recursive_merge {
