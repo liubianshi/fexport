@@ -66,12 +66,13 @@ sub run_pandoc {
   my ( $stderr_bytes, $stdout_bytes );
   run3 $cmd_ref, \$stdin_data, \$stdout_bytes, \$stderr_bytes;
 
-  # 用 syswrite 直接写字节、绕过 PerlIO layer (主脚本 use open ':std :utf8' 会
-  # 让 STDOUT 有 :utf8 layer，print 字节会被再次编码而 mojibake)；
-  # 同时避免 binmode 永久改写 STDOUT，导致下游 print 宽字符触发 Wide character 警告
+  # dup 出 :raw 句柄写字节，绕过 use open ':std :utf8' 加上的编码层；
+  # syswrite 在 :utf8 句柄上被 Perl 明确禁止，binmode 会永久改写句柄
   if ( defined $stdout_bytes && length $stdout_bytes ) {
     STDOUT->flush;
-    syswrite STDOUT, $stdout_bytes;
+    open( my $raw_out, '>>&:raw', \*STDOUT ) or die "Cannot dup STDOUT: $!";
+    print $raw_out $stdout_bytes;
+    close $raw_out;
   }
 
   # 4. 错误检查
@@ -81,7 +82,9 @@ sub run_pandoc {
     my $exit_code = $? >> 8;
     if ( defined $stderr_bytes && length $stderr_bytes ) {
       STDERR->flush;
-      syswrite STDERR, $stderr_bytes;
+      open( my $raw_err, '>>&:raw', \*STDERR ) or die "Cannot dup STDERR: $!";
+      print $raw_err $stderr_bytes;
+      close $raw_err;
     }
     die "Error: Pandoc exited with code $exit_code. Check logs for details.\n";
   }
