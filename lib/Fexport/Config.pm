@@ -131,10 +131,37 @@ sub merge_config {
   my ( $file_config, $cli_opts ) = @_;
 
   # 链式合并：Defaults -> File -> CLI
+  # 注意：_get_defaults() 同时承担首次填充 %FORMAT_RAW 的副作用，必须先于 formats 合并执行
   my $merged = _get_defaults();
 
-  $merged = _recursive_merge( $merged, $file_config ) if $file_config;
-  $merged = _recursive_merge( $merged, $cli_opts )    if $cli_opts;
+  if ( ref $file_config eq 'HASH' ) {
+
+    # 浅拷贝避免污染调用方（merge_config 在语义上应只读 $file_config）
+    my %local = %$file_config;
+
+    # 1) global.* 上提，与 defaults 同层（与 _load_defaults 的解构对称）
+    if ( my $g = delete $local{global} ) {
+      $merged = _recursive_merge( $merged, $g ) if ref $g eq 'HASH';
+    }
+
+    # 2) formats.* 并入 %FORMAT_RAW：同名格式深合并，新增格式直接添加
+    if ( my $f = delete $local{formats} ) {
+      if ( ref $f eq 'HASH' ) {
+        for my $fmt ( keys %$f ) {
+          $FORMAT_RAW{$fmt} =
+            exists $FORMAT_RAW{$fmt}
+            ? _recursive_merge( $FORMAT_RAW{$fmt}, $f->{$fmt} )
+            : $f->{$fmt};
+        }
+        %FORMAT_CONFIG_CACHE = ();    # 清缓存，避免 get_format_config 返回旧 dclone
+      }
+    }
+
+    # 3) 剩余顶层键走原合并（兼容扁平 yaml: to / pandoc / outfile ...）
+    $merged = _recursive_merge( $merged, \%local ) if %local;
+  }
+
+  $merged = _recursive_merge( $merged, $cli_opts ) if $cli_opts;
 
   # 将格式特定配置挂载到 format_opts，供 build_cmd / Quarto 使用
   if ( defined $merged->{to} ) {

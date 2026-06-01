@@ -178,8 +178,9 @@ sub get_defaults {
         "resource-path" => [],
         "markdown-exts" => [qw(md markdown rmd rmarkdown qmd quarto)],
         filters         => [
-          "--filter=pandoc-crossref", "--lua-filter=$share_dir/filters/rm-test-table-line.lua",
-          "--citeproc",               "--lua-filter=$share_dir/filters/rsbc.lua",
+          "--filter=pandoc-crossref",
+          "--lua-filter=$share_dir/filters/rm-test-table-line.lua",
+          "--lua-filter=$share_dir/filters/rsbc.lua",
         ],
         "user-opts"    => [],
         "markdown-fmt" => join( '+', 'markdown', @$md_extensions ),
