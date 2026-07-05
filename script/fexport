@@ -26,9 +26,9 @@ use Term::ANSIColor qw(:constants);
 $Term::ANSIColor::AUTORESET = 1;
 
 # --- Fexport Modules ---
-use Fexport::Config      qw(load_config merge_config process_params);
-use Fexport::Util        qw(run_pandoc save_lines stop_browser_preview
-                              extract_yaml_frontmatter merge_frontmatter_into_defaults);
+use Fexport::Config qw(load_config merge_config process_params);
+use Fexport::Util   qw(run_pandoc save_lines stop_browser_preview
+  extract_yaml_frontmatter merge_frontmatter_into_defaults);
 use Fexport::PostProcess qw(postprocess_docx postprocess_html postprocess_latex);
 use Fexport::Rmd         qw(render_rmd);
 use Fexport::Quarto      qw(render_qmd);
@@ -59,20 +59,11 @@ if ( defined $sep_index ) {
 
 # Define command-line options
 GetOptions(
-  \%cli,
-  'config|c=s',
-  'to|t=s',
-  'from|f=s',
-  'outfile|o=s',
-  'outdir|d=s',
-  'workdir|w=s',
-  'verbose|v',
-  'keep|k',
-  'preview|p',
-  'stop-preview',
-  'help|h',
+  \%cli,         'config|c=s', 'to|t=s', 'from|f=s',  'outfile|o=s',  'outdir|d=s',
+  'workdir|w=s', 'verbose|v',  'keep|k', 'preview|p', 'stop-preview', 'help|h',
   'browser|b=s',
-) or pod2usage(2);
+  )
+  or pod2usage(2);
 
 # Handle help or stop-preview early
 if ( $cli{help} ) {
@@ -115,11 +106,28 @@ if ( $opts->{from} eq 'rmd' ) {
     $tmp->spew_utf8( join( "", <STDIN> ) );
     $infile = $tmp;
   }
-  render_rmd( $infile, $outfile, $opts->{verbose} );
+  render_rmd(
+    {
+      infile      => $infile,
+      to          => $opts->{to},
+      pandoc_opts => $opts->{pandoc_opts},
+    }
+  );
   exit 0;
 }
 elsif ( $opts->{from} eq 'qmd' ) {
-  render_qmd( $infile, $outfile, $opts->{verbose} );
+  render_qmd(
+    {
+      infile  => $infile,
+      to      => $opts->{to},
+      outfile => $outfile,
+      lang    => $opts->{lang},
+      preview => $opts->{preview},
+      verbose => $opts->{verbose},
+      keep    => $opts->{keep},
+      browser => $opts->{browser},
+    }
+  );
   exit 0;
 }
 
@@ -132,11 +140,9 @@ if ( $opts->{from} eq 'md' ) {
 
   my $fm = extract_yaml_frontmatter( \@md_lines );
   if ( ref $fm eq 'HASH' && %$fm ) {
-    $effective_format_opts =
-      merge_frontmatter_into_defaults( $opts->{format_opts}, $fm );
+    $effective_format_opts = merge_frontmatter_into_defaults( $opts->{format_opts}, $fm );
     if ( $opts->{verbose} ) {
-      warn "[Debug] YAML front-matter merged into defaults: "
-        . join( ', ', sort keys %$fm ) . "\n";
+      warn "[Debug] YAML front-matter merged into defaults: " . join( ', ', sort keys %$fm ) . "\n";
     }
   }
 }

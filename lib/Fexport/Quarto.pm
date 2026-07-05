@@ -10,7 +10,7 @@ use Exporter 'import';
 use Path::Tiny;
 use Digest::MD5 qw(md5_hex);
 use File::Spec;
-use YAML                 qw(LoadFile DumpFile Load);
+use YAML::XS             qw(LoadFile DumpFile);
 use Scope::Guard         qw(guard);
 use List::Util           qw(uniq);
 use IPC::Run3            qw(run3);
@@ -18,14 +18,18 @@ use POSIX                qw(setsid);
 use IPC::Cmd             qw(can_run);
 use Cwd                  qw(getcwd);
 use Cwd                  qw(getcwd);
-use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview);
+use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview require_hash_args);
 use Fexport::Config      qw(get_format_config);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 use Term::ANSIColor      qw(:constants);
 use IPC::Run3            qw(run3);
-use Encode               qw(encode_utf8);
+use Encode               qw(encode_utf8 decode_utf8);
 
 $Term::ANSIColor::AUTORESET = 1;
+
+# 让 YAML::XS 把 JSON::PP::Boolean 序列化为裸词 true/false（与 Pandoc.pm 一致），
+# 否则写入 quarto 的 _metadata.yml 会带上 quarto 无法识别的 Perl 私有布尔标签。
+$YAML::XS::Boolean = "JSON::PP";
 
 our @EXPORT_OK = qw(render_qmd);
 
@@ -38,6 +42,9 @@ my $PANDOC_DIR = path( find_pandoc_datadir() );
 
 sub render_qmd {
   my ($args) = @_;
+
+  # 参数契约：必须传入单个 hashref（历史上曾用位置参数调用而崩溃，见 t/render_contract.t）
+  require_hash_args( 'render_qmd', $args, qw(infile to outfile) );
 
   # 解构参数
   my $infile_raw = $args->{infile};
@@ -222,7 +229,7 @@ sub _run_quarto_with_metadata {
   $lang //= $meta_data->{lang};
   $meta_data->{lang} = $lang;
 
-  # 写入临时 _metadata.yml
+  # 写入临时 _metadata.yml（YAML::XS 在上面配置了 JSON::PP 布尔，直接输出裸词 true/false）
   DumpFile( $meta_file->stringify, $meta_data );
   $generated_meta = 1;
 
@@ -230,12 +237,35 @@ sub _run_quarto_with_metadata {
   # 注意：此时 CWD 已经是 input dir，所以 execute-dir 为 .
   my @cmd = _build_quarto_command( $infile->basename, $quarto_target, $local_outfile, $meta_data, $verbose );
 
-  print encode_utf8( CYAN . "🚀 Running Quarto render..." . RESET . "\n" );
-  print FAINT, "   Command: ", join( " ", @cmd ), "\n", RESET if $verbose;
+  # 注意：脚本层已通过 `use open qw(:std :utf8)` 给 STDOUT/STDERR 挂上 :utf8 层，
+  # 这里不能再 encode_utf8，否则 emoji 会被编码两遍变成乱码 (🚀 -> ð...)。
+  print CYAN . "🚀 Running Quarto render..." . RESET . "\n";
+  print FAINT . "   Command: " . join( " ", @cmd ) . "\n" . RESET if $verbose;
 
-  system(@cmd) == 0 or die encode_utf8( RED . "❌ Failed to run quarto: $?" . RESET );
+  my $exit_code;
+  if ($verbose) {
 
-  print encode_utf8( GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n" );
+    # verbose：让 quarto 把输出直接流到终端 (quarto 自行处理编码)
+    system(@cmd);
+    $exit_code = $?;
+  }
+  else {
+    # 非 verbose：捕获 quarto 的 stdout+stderr，仅在失败时展示，
+    # 否则 --quiet 会把真正的报错也一并吞掉，只剩一个退出码。
+    my $output = '';
+    run3 \@cmd, \undef, \$output, \$output;
+    $exit_code = $?;
+    print decode_utf8($output) if $exit_code != 0 && length $output;
+  }
+
+  if ( $exit_code != 0 ) {
+    die RED
+      . sprintf( "❌ Quarto render failed (exit code %d).\n", $exit_code >> 8 )
+      . "   Re-run with -v to see the full command and quarto output."
+      . RESET . "\n";
+  }
+
+  print GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n";
 
   return $lang;
 }

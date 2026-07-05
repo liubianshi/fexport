@@ -34,6 +34,7 @@ our @EXPORT_OK = qw(
   stop_browser_preview
   extract_yaml_frontmatter
   merge_frontmatter_into_defaults
+  require_hash_args
   run3
 );
 
@@ -476,6 +477,23 @@ sub merge_frontmatter_into_defaults {
   }
 
   return $merged;
+}
+
+# 校验渲染器 (render_qmd / render_rmd 等) 的参数契约：
+# 必须传入单个 hashref，且给定的必填 key 都已定义。违约时 die 出可读信息。
+# $name 用于错误消息，@required 为必填 key 列表。
+sub require_hash_args {
+  my ( $name, $args, @required ) = @_;
+
+  die "$name requires a single hash reference argument (got " . ( ref $args || 'non-reference scalar' ) . ")\n"
+    unless ref $args eq 'HASH';
+
+  for my $req (@required) {
+    die "$name missing required argument: '$req'\n"
+      unless defined $args->{$req};
+  }
+
+  return;
 }
 
 1;

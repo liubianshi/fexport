@@ -9,12 +9,19 @@ use Exporter 'import';
 use Path::Tiny;
 use YAML          qw(LoadFile);
 use IPC::Run3     qw(run3);
-use Fexport::Util qw(find_resource);
+use Fexport::Util qw(find_resource require_hash_args);
 
 our @EXPORT_OK = qw(render_rmd);
 
 sub render_rmd {
-  my ( $infile_raw, $to_format, $pandoc_opts_ref ) = @_;
+  my ($args) = @_;
+
+  # 参数契约：与 render_qmd 一致，接收单个 hashref（见 t/render_contract.t）
+  require_hash_args( 'render_rmd', $args, qw(infile to) );
+
+  my $infile_raw      = $args->{infile};
+  my $to_format       = $args->{to};
+  my $pandoc_opts_ref = $args->{pandoc_opts} // [];    # 缺省空数组，避免 push 到非数组引用
 
   # 1. 准备路径
   my $infile = path($infile_raw)->absolute;
