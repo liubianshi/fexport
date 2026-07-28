@@ -155,7 +155,7 @@ tryCatch(
 
     # 确定最终输出文件绝对路径
     # render_res 通常返回的是最终文件的路径，如果是相对路径，结合 output_dir
-    if (!is_absolute_path(render_res)) {
+    if (!xfun::is_abs_path(render_res)) {
       meta$outfile <- file.path(meta$output_dir, basename(render_res))
     } else {
       meta$outfile <- render_res

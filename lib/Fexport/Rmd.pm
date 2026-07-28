@@ -76,12 +76,12 @@ sub render_rmd {
   # C. 检查是否需要读取中间 Markdown 内容
   # 如果 R 配置说 run_pandoc = FALSE (或 'no')，说明 Pandoc 步骤由 Perl 接管
   # 这时我们需要读取 R 生成的中间文件 (.knit.md 或 .md)
-  # 注意：YAML 中的布尔值 false 在 Perl YAML::LoadFile 中可能解析为 '' 或 0
   my $run_pandoc = $meta->{run_pandoc};
 
-  # 规范化布尔判断
-  my $is_pandoc_run_by_r =
-    ( defined $run_pandoc && ( $run_pandoc eq 'true' || $run_pandoc eq '1' || $run_pandoc eq 'TRUE' ) );
+  # 规范化布尔判断：R 的 yaml::write_yaml 把 TRUE 写成 `yes`、FALSE 写成 `no`，
+  # 而 YAML.pm 原样读成字符串，故须按 YAML 1.1 的真值拼写全集判断。
+  # 只认 'true'/'1' 时 `yes` 会被判为假，Perl 会把 R 已生成的 .docx 当 UTF-8 文本重读。
+  my $is_pandoc_run_by_r = ( defined $run_pandoc && $run_pandoc =~ /\A(?:1|y|yes|true|on)\z/i );
 
   unless ($is_pandoc_run_by_r) {
     my $outfile = path( $meta->{outfile} );

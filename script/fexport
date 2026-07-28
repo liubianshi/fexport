@@ -106,13 +106,23 @@ if ( $opts->{from} eq 'rmd' ) {
     $tmp->spew_utf8( join( "", <STDIN> ) );
     $infile = $tmp;
   }
-  render_rmd(
+  # 未完成的集成：render_rmd 的返回值（md_lines / meta{outfile} / clean_files）无人接手，
+  # 因此 -o 不生效、后处理不跑、run_pandoc=false 的格式停在 .knit.md。
+  # 产物落在 R 决定的位置，这里出声说明，避免「退出码 0 却找不到文件」。
+  my $rmd_res = render_rmd(
     {
       infile      => $infile,
       to          => $opts->{to},
       pandoc_opts => $opts->{pandoc_opts},
     }
   );
+
+  my $rmd_outfile = $rmd_res->{meta}{outfile};
+  warn "[Warn] Rmd 路径尚未接管输出：产物在 "
+    . ( $rmd_outfile // '(R 侧决定的位置)' )
+    . "，未按 --outfile 移动。\n"
+    if defined $opts->{outfile};
+
   exit 0;
 }
 elsif ( $opts->{from} eq 'qmd' ) {
