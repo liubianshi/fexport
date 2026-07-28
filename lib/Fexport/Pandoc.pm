@@ -16,7 +16,14 @@ our @EXPORT_OK = qw(build_cmd);
 $YAML::XS::Boolean = "JSON::PP";
 
 # fexport 内部 key，不传给 pandoc
+# 互补集见 Fexport::Util 的 %PANDOC_DEFAULTS_KEYS（front matter 可提升到 defaults 顶层的 key）
 my %FEXPORT_ONLY = map { $_ => 1 } qw(ext intermediate intermediate_ext from-extensions from);
+
+# 位置敏感的开关：它们本质是过滤器，效果取决于在过滤器序列中的次序。
+# 写进 defaults 文件会被 pandoc 排到命令行 --filter 之前，而 pandoc-crossref 必须先于 citeproc，
+# 否则 citeproc 已解析的引文会被 crossref 改写回 [@key] 原文，只剩文末的参考文献表。
+# 故这些 key 从 defaults 中摘出，改为在过滤器之后追加对应的命令行开关。
+my %FILTER_FLAGS = ( citeproc => '--citeproc' );
 
 sub build_cmd {
   my ( $config, $params ) = @_;
@@ -40,10 +47,11 @@ sub build_cmd {
   my @cli_opts =
     ref( $params->{user_opts} ) eq 'ARRAY' ? @{ $params->{user_opts} } : shellwords( $params->{user_opts} // '' );
 
-  # 3. 格式配置转临时 defaults 文件
+  # 3. 格式配置转临时 defaults 文件（%FILTER_FLAGS 的 key 在此摘出，改走命令行）
   my $defaults_file;
   if ( my $format_opts = $params->{format_opts} ) {
-    my %pandoc_defaults = map { $_ => $format_opts->{$_} } grep { !$FEXPORT_ONLY{$_} } keys %$format_opts;
+    my %pandoc_defaults =
+      map { $_ => $format_opts->{$_} } grep { !$FEXPORT_ONLY{$_} && !$FILTER_FLAGS{$_} } keys %$format_opts;
 
     if ( keys %pandoc_defaults ) {
       ( undef, $defaults_file ) = tempfile( "fexport-defaults-XXXXXX", TMPDIR => 1, SUFFIX => '.yaml', UNLINK => 1 );
@@ -61,13 +69,14 @@ sub build_cmd {
   }
 
   # 4. 构建最终命令列表
-  my @resource_paths = grep { defined && length }
-    $config->{share_dir}, @{ $config->{resource_path} // [] };
+  my @resource_paths = grep { defined && length } $config->{share_dir}, @{ $config->{resource_path} // [] };
   my @cmd = ( @base_cmd, '--from', $input_fmt );
   push @cmd, '--resource-path', join( ':', @resource_paths ) if @resource_paths;
   push @cmd, @{ $config->{filters} // [] };
   push @cmd, "--defaults", $defaults_file if $defaults_file;
+  push @cmd, map { $FILTER_FLAGS{$_} } grep { $params->{format_opts}{$_} } sort keys %FILTER_FLAGS;
   push @cmd, ( @config_opts, @cli_opts );
+
   if ( $params->{verbose} ) {
     push @cmd, '--verbose';
     print join( "\n", @cmd ), "\n";

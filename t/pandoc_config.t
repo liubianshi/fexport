@@ -3,6 +3,8 @@ use warnings;
 use Test::More;
 use File::Temp qw(tempfile);
 use Data::Dump qw(dump);
+use JSON::PP   ();
+use Path::Tiny qw(path);
 
 use Fexport::Pandoc qw(build_cmd);
 use Fexport::Config qw(load_config merge_config);
@@ -54,6 +56,36 @@ my ($mi) = grep { $merged_cmd->[$_] eq '--resource-path' } 0..$#$merged_cmd;
 like($merged_cmd->[$mi + 1], qr{share.*:/custom/path|/custom/path.*share},
      "user resource-path appended to share_dir");
 unlink $f2;
+
+# citeproc 是过滤器，必须排在 pandoc-crossref 之后：
+# 顺序颠倒时 crossref 会把 citeproc 已解析的引文改写回 [@key] 原文（issue #1）
+{
+  my $cmd = [
+    build_cmd(
+      merge_config()->{pandoc},
+      { format_opts => { citeproc => JSON::PP::true, ext => 'docx', 'reference-doc' => '/tmp/ref.docx' } }
+    )
+  ];
+
+  my $idx = sub { ( grep { $cmd->[$_] eq $_[0] } 0 .. $#$cmd )[0] };
+
+  my $cite_idx     = $idx->('--citeproc');
+  my $crossref_idx = $idx->('--filter=pandoc-crossref');
+
+  ok( defined $cite_idx,         "citeproc 为真时命令行出现 --citeproc" );
+  ok( defined $crossref_idx,     "命令行含 pandoc-crossref 过滤器" );
+  ok( $cite_idx > $crossref_idx, "--citeproc 排在 pandoc-crossref 之后" );
+
+  # 同时必须从 defaults 文件里摘除，否则它会被 pandoc 提前到命令行过滤器之前执行
+  my $defaults_content = path( $cmd->[ $idx->('--defaults') + 1 ] )->slurp_utf8;
+  unlike( $defaults_content, qr/^citeproc:/m, "citeproc 不写进 defaults 文件" );
+}
+
+# 未启用 citeproc 的格式不得出现 --citeproc
+{
+  my $cmd = [ build_cmd( merge_config()->{pandoc}, { format_opts => { ext => 'tex' } } ) ];
+  ok( !( grep { $_ eq '--citeproc' } @$cmd ), "未配置 citeproc 时不追加 --citeproc" );
+}
 
 done_testing();
 unlink $filename;

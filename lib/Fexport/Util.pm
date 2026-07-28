@@ -416,6 +416,87 @@ sub extract_yaml_frontmatter {
   return $parsed;
 }
 
+# pandoc defaults 文件的顶层键白名单（键名以 pandoc 3.x 长选项名为准，已逐个实测被 pandoc 接受）。
+# 与 Fexport::Pandoc 的 %FEXPORT_ONLY（不传给 pandoc 的 fexport 内部 key）互为补集，改动时两处对照。
+# 用途：front matter 里写的 pandoc 开关，即使当前格式的 defaults 顶层没有预置该键，
+#       也要投影到顶层，而不是落进 metadata —— pandoc 不读 metadata 下的这些键，会静默失效。
+# 反过来也必须严格白名单化：pandoc 遇到未知顶层键会直接报错退出，
+#       所以 title / author 这类真元数据仍须走 metadata 兜底。
+# 刻意不收录的四类键：
+#   1. fexport 掌管的调用层选项：output-file / input-file(s) / defaults / data-dir / verbosity / log-file / trace；
+#   2. 安全与网络开关：sandbox / no-check-certificate / request-headers；
+#   3. 已有别名在列的重复键：reader（=from）、writer（=to）；
+#   4. 本身就是 pandoc 元数据字段、写在 metadata 下即有效的键：bibliography / csl / citation-abbreviations。
+my %PANDOC_DEFAULTS_KEYS = map { $_ => 1 } qw(
+  abbreviations
+  ascii
+  chunk-template
+  cite-method
+  citeproc
+  columns
+  css
+  default-image-extension
+  dpi
+  email-obfuscation
+  embed-resources
+  eol
+  epub-chapter-level
+  epub-cover-image
+  epub-fonts
+  epub-metadata
+  epub-subdirectory
+  epub-title-page
+  extract-media
+  file-scope
+  filters
+  from
+  highlight-style
+  html-math-method
+  html-q-tags
+  identifier-prefix
+  include-after-body
+  include-before-body
+  include-in-header
+  incremental
+  indented-code-classes
+  ipynb-output
+  list-tables
+  listings
+  markdown-headings
+  metadata-file
+  metadata-files
+  number-offset
+  number-sections
+  pdf-engine
+  pdf-engine-opt
+  pdf-engine-opts
+  preserve-tabs
+  reference-doc
+  reference-links
+  reference-location
+  resource-path
+  section-divs
+  self-contained
+  shift-heading-level-by
+  slide-level
+  split-level
+  standalone
+  strip-comments
+  syntax-definition
+  syntax-definitions
+  syntax-highlighting
+  tab-stop
+  table-of-contents
+  template
+  title-prefix
+  to
+  toc
+  toc-depth
+  top-level-division
+  track-changes
+  wrap
+);
+
 # 内部：值层面的深合并（front matter 优先；array 取 uniq union；hash 递归）
 # 与 Fexport::Quarto::_merge_yaml 语义保持一致，但返回新值而非 in-place
 sub _merge_value {
@@ -443,8 +524,9 @@ sub _merge_value {
 #   1) 嵌套形式 variables: {} / metadata: {} —— 直接深合并到对应层
 #   2) defaults.variables 中已有该键 —— 合到 variables 层（保证作为显式变量起效）
 #   3) defaults.metadata 中已有该键   —— 合到 metadata 层
-#   4) defaults 顶层已有该键           —— 合到顶层（template / pdf-engine / csl 等）
-#   5) 三处都没有                       —— 安全归宿到 metadata（title / nocite 等）
+#   4) defaults 顶层已有该键，或该键属于 pandoc defaults 顶层选项
+#                                       —— 合到顶层（template / pdf-engine / citeproc / toc 等）
+#   5) 以上都不是                       —— 安全归宿到 metadata（title / nocite 等）
 # 返回：新构造的 hashref（不修改入参）
 sub merge_frontmatter_into_defaults {
   my ( $format_opts, $frontmatter ) = @_;
@@ -467,7 +549,7 @@ sub merge_frontmatter_into_defaults {
     elsif ( ref $merged->{metadata} eq 'HASH' && exists $merged->{metadata}{$key} ) {
       $merged->{metadata}{$key} = _merge_value( $merged->{metadata}{$key}, $val );
     }
-    elsif ( exists $merged->{$key} ) {
+    elsif ( exists $merged->{$key} || $PANDOC_DEFAULTS_KEYS{$key} ) {
       $merged->{$key} = _merge_value( $merged->{$key}, $val );
     }
     else {

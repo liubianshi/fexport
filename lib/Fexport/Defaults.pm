@@ -96,9 +96,11 @@ sub get_defaults {
       ext                   => "docx",
       from                  => 'markdown+' . join( '+', @$md_extensions ),
       "syntax-highlighting" => "pygments",
+      citeproc              => $true,
       "reference-doc"       => "$share_dir/templates/economic-research-china.docx",
+
       # csl                   => "$share_dir/china-national-standard-gb-t-7714-2015-author-date.csl",
-      metadata              => {
+      metadata => {
         "link-citations" => $false,
       },
     },
@@ -108,6 +110,7 @@ sub get_defaults {
       to                    => "html",
       template              => "normal",
       "syntax-highlighting" => "pygments",
+      citeproc              => $true,
       "html-math-method"    => { method => "katex" },
       "embed-resources"     => $false,
       metadata              => {
@@ -178,8 +181,7 @@ sub get_defaults {
         "resource-path" => [],
         "markdown-exts" => [qw(md markdown rmd rmarkdown qmd quarto)],
         filters         => [
-          "--filter=pandoc-crossref",
-          "--lua-filter=$share_dir/filters/rm-test-table-line.lua",
+          "--filter=pandoc-crossref", "--lua-filter=$share_dir/filters/rm-test-table-line.lua",
           "--lua-filter=$share_dir/filters/rsbc.lua",
         ],
         "user-opts"    => [],
