@@ -171,6 +171,32 @@ sub merge_config {
   return $merged;
 }
 
+# markdown 家族扩展名 → 渲染器分派键。
+# script/fexport 按 md / rmd / qmd 三个字符串挑渲染器，故必须先归一：
+# 未归一时 .Rmd（R Markdown 的规范写法）、.markdown、.rmarkdown 会落空全部分支，
+# md_lines 保持为空，pandoc 收到空 stdin 却以退出码 0 结束，静默产出空文档。
+# 键集合需与 Fexport::Defaults 的 pandoc.markdown-exts 保持一致。
+my %FROM_ALIAS = (
+  md        => 'md',
+  markdown  => 'md',
+  rmd       => 'rmd',
+  rmarkdown => 'rmd',
+  qmd       => 'qmd',
+  quarto    => 'qmd',
+);
+
+# 归一到分派键；无法识别的扩展名按 markdown 处理，但要出声，不能静默
+sub _normalize_from {
+  my ($from) = @_;
+  return 'md' unless defined $from && length $from;
+
+  my $key = $FROM_ALIAS{ lc $from };
+  return $key if $key;
+
+  warn "[Warn] Unknown input format '$from', treating it as markdown.\n";
+  return 'md';
+}
+
 sub process_params {
   my ( $opts, $infile_raw, $current_pwd ) = @_;
 
@@ -204,7 +230,8 @@ sub process_params {
 
   # 3. 推断格式
   $opts->{from} //= ( $resolved_infile && $resolved_infile =~ /\.([^.]+)$/ ? $1 : undef ) || 'md';
-  $opts->{to}   //= "html";
+  $opts->{from} = _normalize_from( $opts->{from} );
+  $opts->{to} //= "html";
 
   # 4. 确定最终输出文件路径 (修正后的逻辑)
   # 逻辑核心：如果存在 outdir，则 outfile 被视为基于 outdir 的相对路径
