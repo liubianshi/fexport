@@ -128,14 +128,15 @@ if ( $opts->{from} eq 'rmd' ) {
 elsif ( $opts->{from} eq 'qmd' ) {
   render_qmd(
     {
-      infile  => $infile,
-      to      => $opts->{to},
-      outfile => $outfile,
-      lang    => $opts->{lang},
-      preview => $opts->{preview},
-      verbose => $opts->{verbose},
-      keep    => $opts->{keep},
-      browser => $opts->{browser},
+      infile      => $infile,
+      to          => $opts->{to},
+      outfile     => $outfile,
+      lang        => $opts->{lang},
+      preview     => $opts->{preview},
+      verbose     => $opts->{verbose},
+      keep        => $opts->{keep},
+      browser     => $opts->{browser},
+      pandoc_opts => $opts->{pandoc_opts},
     }
   );
   exit 0;

@@ -23,7 +23,7 @@ use Fexport::Config      qw(get_format_config);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 use Term::ANSIColor      qw(:constants);
 use IPC::Run3            qw(run3);
-use Encode               qw(encode_utf8 decode_utf8);
+use Encode               qw(decode_utf8);
 
 $Term::ANSIColor::AUTORESET = 1;
 
@@ -56,6 +56,11 @@ sub render_qmd {
   my $keep       = $args->{keep};
   my $browser    = $args->{browser};
 
+  # `--` 之后的透传参数。Quarto 把无法识别的选项原样交给 pandoc，
+  # 因此 --bibliography / --csl 之类必须走到这里；漏掉它会让 citeproc
+  # 拿不到书目、把所有 key 渲染成 `key?`，PDF 侧再连锁成 \citeproc 未定义。
+  my $pandoc_opts = $args->{pandoc_opts} // [];
+
   # 1. 路径对象化
   my $infile     = path($infile_raw)->absolute;
   my $final_dest = path($outfile);
@@ -78,6 +83,7 @@ sub render_qmd {
     local_outfile => $local_outfile,
     lang          => $lang,
     verbose       => $verbose,
+    pandoc_opts   => $pandoc_opts,
   );
 
   # 6. 后处理与移动
@@ -194,8 +200,8 @@ sub _resolve_template_path {
 
 sub _run_quarto_with_metadata {
   my %args = @_;
-  my ( $infile, $format_config, $quarto_target, $local_outfile, $lang, $verbose ) =
-    @args{qw(infile format_config quarto_target local_outfile lang verbose)};
+  my ( $infile, $format_config, $quarto_target, $local_outfile, $lang, $verbose, $pandoc_opts ) =
+    @args{qw(infile format_config quarto_target local_outfile lang verbose pandoc_opts)};
 
   # 切换工作目录到 input file 所在目录
   # 这是为了解决 Quarto embed-resources 在 CWD 查找资源的问题
@@ -235,7 +241,14 @@ sub _run_quarto_with_metadata {
 
   # 构建并执行 Quarto 命令
   # 注意：此时 CWD 已经是 input dir，所以 execute-dir 为 .
-  my @cmd = _build_quarto_command( $infile->basename, $quarto_target, $local_outfile, $meta_data, $verbose );
+  my @cmd = _build_quarto_command(
+    infile_name   => $infile->basename,
+    quarto_target => $quarto_target,
+    local_outfile => $local_outfile,
+    meta_data     => $meta_data,
+    verbose       => $verbose,
+    pandoc_opts   => $pandoc_opts,
+  );
 
   # 注意：脚本层已通过 `use open qw(:std :utf8)` 给 STDOUT/STDERR 挂上 :utf8 层，
   # 这里不能再 encode_utf8，否则 emoji 会被编码两遍变成乱码 (🚀 -> ð...)。
@@ -271,7 +284,9 @@ sub _run_quarto_with_metadata {
 }
 
 sub _build_quarto_command {
-  my ( $infile_name, $quarto_target, $local_outfile, $meta_data, $verbose ) = @_;
+  my %args = @_;
+  my ( $infile_name, $quarto_target, $local_outfile, $meta_data, $verbose, $pandoc_opts ) =
+    @args{qw(infile_name quarto_target local_outfile meta_data verbose pandoc_opts)};
 
   # Base command array with required arguments
   # infile_name 只传文件名，因为我们在 input 目录下运行
@@ -298,6 +313,10 @@ sub _build_quarto_command {
   if ( my $pdf_engine = $meta_data->{'pdf-engine'} ) {
     push @cmd, "--pdf-engine=$pdf_engine";
   }
+
+  # 用户在 `--` 之后给出的参数放在最末：quarto/pandoc 都是后者胜出，
+  # 这样手写选项才能压过上面的默认值（含 --quiet 与内置 filter）。
+  push @cmd, @$pandoc_opts if $pandoc_opts && @$pandoc_opts;
 
   return @cmd;
 }
@@ -341,7 +360,7 @@ sub _process_html_output {
   postprocess_html( \@lines );
 
   path($outfile_dest)->spew_utf8(@lines);
-  print encode_utf8( BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n" );
+  print BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n";
   launch_browser_preview( $outfile_dest, $browser ) if $preview;
 }
 
@@ -368,7 +387,7 @@ sub _process_pdf_output {
     ( 'latexmk', '-xelatex', "-outdir=" . $temp_dir->stringify, $verbose ? () : '-quiet', $temp_tex->stringify );
 
   if ($verbose) {
-    print encode_utf8( CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n" );
+    print CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n";
     system(@cmd) == 0 or die RED "❌ Failed to render LaTeX file: $?";
   }
   else {
@@ -404,7 +423,10 @@ sub _process_pdf_output {
     }
 
     if ( $exit_code != 0 ) {
-      die encode_utf8( RED . "❌ Failed to render LaTeX file:\n$output" . RESET );
+
+      # $output 是 run3 捕获的字节串，需先 decode 再交给带 :utf8 层的 STDERR，
+      # 否则中文文件名/日志会以乱码呈现。
+      die RED . "❌ Failed to render LaTeX file:\n" . decode_utf8($output) . RESET . "\n";
     }
   }
 
@@ -412,7 +434,7 @@ sub _process_pdf_output {
   my $generated_pdf = $temp_dir->child("intermediate.pdf");
   if ( $generated_pdf->exists ) {
     $generated_pdf->move($final_pdf_dest);
-    print encode_utf8( BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n" );
+    print BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n";
   }
   else {
     die RED "❌ Error: latexmk finished but PDF not found.";

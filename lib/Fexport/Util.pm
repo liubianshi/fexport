@@ -42,7 +42,10 @@ our @EXPORT_OK = qw(
 # 1. Pandoc 执行相关
 # ==============================================================================
 
-use Encode qw(encode_utf8);    # Ensure Encode is used
+# encode_utf8 只用于「需要字节流」的去处：pandoc 的 STDIN、以 :raw 打开的日志句柄、
+# 以及 YAML::XS::Load。终端输出不在此列——入口脚本已用 `use open qw(:std :utf8)`
+# 给 STDOUT/STDERR 挂上 :utf8 层，再 encode 一次会把 emoji/中文打成乱码 (⏳ -> â³)。
+use Encode qw(encode_utf8);
 
 # ...
 
@@ -216,7 +219,7 @@ sub launch_browser_preview {
   }
 
   # 4. 启动新的后台进程
-  say encode_utf8( "\n" . BOLD . "⏳ Starting browser-sync in background..." . RESET );
+  say "\n" . BOLD . "⏳ Starting browser-sync in background..." . RESET;
 
   my $pid = fork();
   if ( !defined $pid ) {
@@ -256,9 +259,9 @@ sub launch_browser_preview {
   # Save PID and Server Path for identification
   $pid_file->spew_utf8("$pid\n$server_dir");
 
-  say encode_utf8( "\n" . BOLD . GREEN . "✅ Preview Server started" . RESET . " (PID: $pid)" );
-  say encode_utf8( "   📂 Serving:  " . CYAN . $server_dir . RESET );
-  say encode_utf8( "   💡 Control:  " . YELLOW . "fexport --stop-preview" . RESET );
+  say "\n" . BOLD . GREEN . "✅ Preview Server started" . RESET . " (PID: $pid)";
+  say "   📂 Serving:  " . CYAN . $server_dir . RESET;
+  say "   💡 Control:  " . YELLOW . "fexport --stop-preview" . RESET;
 
   # Wait a moment for server to start, then open browser from parent (has display access)
   sleep 1;
@@ -292,14 +295,14 @@ sub stop_browser_preview {
   my $state_dir = $sys_tmp->child("fexport-state");
 
   unless ( $state_dir->is_dir ) {
-    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    say "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET;
     return;
   }
 
   my @pid_files = $state_dir->children(qr/^preview-.*\.pid$/);
 
   if ( @pid_files == 0 ) {
-    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    say "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET;
     return;
   }
 
@@ -330,7 +333,7 @@ sub stop_browser_preview {
   }
 
   if ( @active_previews == 0 ) {
-    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    say "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET;
     return;
   }
 
@@ -375,8 +378,8 @@ sub stop_browser_preview {
   for my $item (@to_stop) {
     my $pid = $item->{pid};
     if ( kill( 'TERM', $pid ) ) {
-      say encode_utf8( "🛑 " . BOLD . RED . "Stopped" . RESET . " preview server (PID: $pid)" );
-      say encode_utf8( "   📂 Path: " . CYAN . $item->{path} . RESET );
+      say "🛑 " . BOLD . RED . "Stopped" . RESET . " preview server (PID: $pid)";
+      say "   📂 Path: " . CYAN . $item->{path} . RESET;
       $item->{pid_file}->remove;
 
       # Clean log file (derive name from pid filename)
@@ -391,7 +394,7 @@ sub stop_browser_preview {
     }
   }
 
-  say encode_utf8( "\n" . BOLD . GREEN . "✅ Stopped $stopped_count preview server(s)." . RESET ) if $stopped_count > 0;
+  say "\n" . BOLD . GREEN . "✅ Stopped $stopped_count preview server(s)." . RESET if $stopped_count > 0;
 }
 
 # ==============================================================================
