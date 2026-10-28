@@ -208,10 +208,18 @@ sub update_styles {
     $ind->removeAttribute('w:firstLine');
   }
   set_indentation( $doc, style_by_id( $xpc, $_ ), firstLineChars => 0, firstLine => 0 )
-    for qw(FirstParagraph FootnoteText Heading2);
+    for qw(FootnoteText Heading2);
+  my $first_paragraph_ind = set_indentation( $doc, style_by_id( $xpc, 'FirstParagraph' ), firstLineChars => 200, );
+  $first_paragraph_ind->removeAttribute('w:firstLine');
+
+  my $normal = style_by_id( $xpc, 'Normal' );
+  set_spacing( $doc, $normal, after => 120, line => 312, lineRule => 'auto' );
 
   my $footnote = style_by_id( $xpc, 'FootnoteText' );
-  set_spacing( $doc, $footnote, line => 240, lineRule => 'auto' );
+  set_spacing( $doc, $footnote, after => 60, line => 240, lineRule => 'auto' );
+  my $footnote_ppr = ordered_child( $doc, $footnote,     'pPr', \@STYLE_ORDER );
+  my $footnote_jc  = ordered_child( $doc, $footnote_ppr, 'jc',  \@PPR_ORDER );
+  set_w_attr( $footnote_jc, 'val', 'left' );
 
   my $reference_title = style_by_id( $xpc, 'ReferenceTitle' );
   set_based_on( $doc, $reference_title, 'Heading1' );
@@ -295,6 +303,18 @@ sub update_styles {
   set_spacing( $doc, $source_note, line => 240, lineRule => 'auto' );
   set_indentation( $doc, $source_note, firstLineChars => 0, firstLine => 0 );
   set_size( $doc, $source_note, 18 );
+
+  for my $style_spec ( [ FigureNote => 'Figure Note' ], [ TableNote => 'Table Note' ], ) {
+    my ( $style_id, $name ) = @$style_spec;
+    my $note_style = add_style(
+      $doc, $xpc,
+      id      => $style_id,
+      name    => $name,
+      basedOn => 'SourceNote',
+      next    => 'BodyText',
+    );
+    set_size( $doc, $note_style, 18 );
+  }
 
   my $emphasis = add_style(
     $doc, $xpc,

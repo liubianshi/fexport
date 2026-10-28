@@ -44,6 +44,7 @@ use_ok( 'Fexport::Config', qw(load_config merge_config get_format_config) );
   is( $merged->{to},            'html',     'CLI overrides file config' );
   is( $merged->{verbose},       1,          'CLI overrides file/default' );
   is( $merged->{keep},          0,          'Defaults preserved if not set (default keep=0)' );
+  is( $merged->{lang},          'en',       'Default language is English' );
   is( $merged->{pandoc}->{cmd}, 'file_cmd', 'File config nested key preserved' );
   is_deeply( $merged->{pandoc}->{filters}, ['f1'], 'File config nested array preserved' );
 }
@@ -89,8 +90,8 @@ use_ok( 'Fexport::Config', qw(load_config merge_config get_format_config) );
   ok( !exists $merged->{global}, '原 global 键不再以嵌套形式残留' );
 
   # defaults 中其它 pandoc.* 字段应仍存在（深合并而非整段替换）
-  ok( exists $merged->{pandoc}->{filters},     'defaults 中的 pandoc.filters 保留' );
-  ok( exists $merged->{pandoc}->{share_dir},   'defaults 中的 pandoc.share_dir 保留' );
+  ok( exists $merged->{pandoc}->{filters},   'defaults 中的 pandoc.filters 保留' );
+  ok( exists $merged->{pandoc}->{share_dir}, 'defaults 中的 pandoc.share_dir 保留' );
 }
 
 # Case 2: 不污染调用方 — merge_config 调用前后 $file_config 应保持一致
@@ -119,8 +120,8 @@ use_ok( 'Fexport::Config', qw(load_config merge_config get_format_config) );
   merge_config( $file_config, { to => 'pdf' } );
 
   my $pdf = get_format_config('pdf');
-  ok( !$pdf->{citeproc},        'formats.pdf.citeproc 被覆盖为 false' );
-  ok( exists $pdf->{template},  'formats.pdf.template 仍保留（深合并）' );
+  ok( !$pdf->{citeproc},       'formats.pdf.citeproc 被覆盖为 false' );
+  ok( exists $pdf->{template}, 'formats.pdf.template 仍保留（深合并）' );
   is( $pdf->{'pdf-engine'}, 'xelatex', 'formats.pdf."pdf-engine" 仍保留' );
 }
 
@@ -149,9 +150,9 @@ use_ok( 'Fexport::Config', qw(load_config merge_config get_format_config) );
 
   my $merged = merge_config( $file_config, {} );
 
-  is( $merged->{to},      'docx',               '扁平 to 仍生效' );
-  is( $merged->{outfile}, '/tmp/whatever.docx', '扁平 outfile 仍生效' );
-  is( $merged->{format_opts}->{ext}, 'docx2', '嵌套 formats.docx 改写也生效' );
+  is( $merged->{to},                 'docx',               '扁平 to 仍生效' );
+  is( $merged->{outfile},            '/tmp/whatever.docx', '扁平 outfile 仍生效' );
+  is( $merged->{format_opts}->{ext}, 'docx2',              '嵌套 formats.docx 改写也生效' );
 }
 
 done_testing();

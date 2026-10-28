@@ -104,6 +104,8 @@ my %sizes = (
   Heading3     => 24,
   Heading4     => 24,
   FootnoteText => 18,
+  FigureNote   => 18,
+  TableNote    => 18,
 );
 
 for my $style_id ( sort keys %sizes ) {
@@ -132,13 +134,23 @@ is( xpath_count( $styles, 'w:rPr/w:u',     $hyperlink ), 1, 'Hyperlink 保留下
 my $footnote_reference = style_by_id( $styles, 'FootnoteReference' );
 is( $styles->findvalue( 'w:rPr/w:vertAlign/@w:val', $footnote_reference ), 'superscript', 'Footnote Reference 保留上标', );
 
-for my $style_id (qw(FirstParagraph FootnoteText Heading2)) {
+for my $style_id (qw(FootnoteText Heading2)) {
   my $style = style_by_id( $styles, $style_id );
   is( $styles->findvalue( 'w:pPr/w:ind/@w:firstLineChars', $style ), 0, "$style_id 显式取消字符首行缩进" );
   is( $styles->findvalue( 'w:pPr/w:ind/@w:firstLine',      $style ), 0, "$style_id 显式取消固定首行缩进" );
 }
-is( xpath_count( $styles, '//w:ind[@w:firstLineChars="200" and @w:firstLine]' ), 0, '两字符缩进不再与固定值冲突' );
+my $first_paragraph = style_by_id( $styles, 'FirstParagraph' );
+is( $styles->findvalue( 'w:pPr/w:ind/@w:firstLineChars', $first_paragraph ),     200, 'First Paragraph 首行缩进两字符' );
+is( xpath_count( $styles, 'w:pPr/w:ind[@w:firstLine]', $first_paragraph ),       0,   'First Paragraph 不含固定首行缩进' );
+is( xpath_count( $styles, '//w:ind[@w:firstLineChars="200" and @w:firstLine]' ), 0,   '两字符缩进不再与固定值冲突' );
+
+is( $styles->findvalue( 'w:pPr/w:spacing/@w:after',    $normal ), 120,    '正文段后间距为 6 pt' );
+is( $styles->findvalue( 'w:pPr/w:spacing/@w:line',     $normal ), 312,    '正文使用 1.3 倍行距' );
+is( $styles->findvalue( 'w:pPr/w:spacing/@w:lineRule', $normal ), 'auto', '正文行距规则正确' );
+
 my $footnote_text = style_by_id( $styles, 'FootnoteText' );
+is( $styles->findvalue( 'w:pPr/w:jc/@w:val',           $footnote_text ), 'left', 'Footnote Text 使用左对齐' );
+is( $styles->findvalue( 'w:pPr/w:spacing/@w:after',    $footnote_text ), 60,     'Footnote Text 段后间距为 3 pt' );
 is( $styles->findvalue( 'w:pPr/w:spacing/@w:line',     $footnote_text ), 240,    'Footnote Text 使用单倍行距' );
 is( $styles->findvalue( 'w:pPr/w:spacing/@w:lineRule', $footnote_text ), 'auto', 'Footnote Text 行距规则正确' );
 
@@ -166,6 +178,8 @@ my %custom_styles = (
   AuthorAffiliation => [ 'paragraph', 'Author' ],
   Keywords          => [ 'paragraph', 'Abstract' ],
   SourceNote        => [ 'paragraph', 'Normal' ],
+  FigureNote        => [ 'paragraph', 'SourceNote' ],
+  TableNote         => [ 'paragraph', 'SourceNote' ],
   EmphasisDot       => [ 'character', 'DefaultParagraphFont' ],
 );
 for my $style_id ( sort keys %custom_styles ) {

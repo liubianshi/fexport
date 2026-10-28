@@ -174,7 +174,7 @@ sub get_defaults {
       verbose => 0,
       keep    => 0,
       preview => 0,
-      lang    => "zh",
+      lang    => "en",
       pandoc  => {
         cmd             => "pandoc +RTS -M512M -RTS",
         share_dir       => $share_dir,

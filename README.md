@@ -72,6 +72,9 @@ DOCX 默认使用 `share/templates/fexport-default.docx`，页面规格为 A4。
 模板只登记字体名称及 `FZJuZhenXinFangS-R-GB` 别名，不嵌入字体文件。
 导出和阅读文档的环境需要安装该中文字体，否则 Word 或 LibreOffice 会按各自规则选择回退字体。
 
+正文采用 1.3 倍行距和 6 pt 段后间距，首段与后续正文段均首行缩进两字符。
+脚注使用 9 pt 字号、单倍行距和左对齐，段后间距为 3 pt。
+
 引文默认使用 Chicago 页下注格式，不生成文末参考文献表。
 需要恢复文末参考文献表时，通过 Pandoc 元数据选项覆盖默认值：
 
@@ -79,11 +82,13 @@ DOCX 默认使用 `share/templates/fexport-default.docx`，页面规格为 A4。
 fexport -t docx -o report.docx document.md -- -M suppress-bibliography=false
 ```
 
-模板提供四个可通过 Pandoc Div 或 Span 调用的自定义样式：
+模板提供六个可通过 Pandoc Div 或 Span 调用的自定义样式：
 
 - `Author Affiliation`：作者单位，居中且不缩进。
 - `Keywords`：关键词，继承摘要风格且不缩进。
-- `Source Note`：图注、表注与资料来源，使用 9 pt 字号和单倍行距。
+- `Source Note`：资料来源等补充说明，使用 9 pt 字号和单倍行距。
+- `Figure Note`：图注，继承 `Source Note` 并使用 9 pt 字号。
+- `Table Note`：表注，继承 `Source Note` 并使用 9 pt 字号。
 - `Emphasis Dot`：中文着重号，不覆盖字体与字号。
 
 ```markdown
