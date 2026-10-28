@@ -171,12 +171,15 @@ end
 
 local function filter_citation(elem)
 	local cite_mode = get_elem(elem, "citations", 1, "mode")
-	if cite_mode == "NormalCitation" then
-		-- 普通方式引用中文文献时 [@小明2029], 应该使用中文括号包裹
-		local first_author = elem.content[1].text:sub(2, -1)
+	local first = elem.content[1]
+	local last = elem.content[#elem.content]
+	if cite_mode == "NormalCitation" and first and first.t == "Str" and last and last.t == "Str" then
+		-- 普通方式引用中文文献时 [@小明2029], 应该使用中文括号包裹。
+		-- note 类 CSL 会把引文包装成 Note，不能按文本型引文处理。
+		local first_author = first.text:sub(2, -1)
 		if is_cjk_character(first_char(first_author)) then
-			elem.content[1].text = "（" .. first_author
-			elem.content[#elem.content].text = elem.content[#elem.content].text:gsub("%)$", "）")
+			first.text = "（" .. first_author
+			last.text = last.text:gsub("%)$", "）")
 		end
 	end
 

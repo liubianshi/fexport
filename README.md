@@ -65,6 +65,52 @@ fexport -t docx -o report.docx document.md
 fexport -t pdf -d ./output document.md
 ```
 
+### Word 默认模板与引文
+
+DOCX 默认使用 `share/templates/fexport-default.docx`，页面规格为 A4。
+正文中文使用「方正聚珍新仿简体」，西文使用 Times New Roman。
+模板只登记字体名称及 `FZJuZhenXinFangS-R-GB` 别名，不嵌入字体文件。
+导出和阅读文档的环境需要安装该中文字体，否则 Word 或 LibreOffice 会按各自规则选择回退字体。
+
+引文默认使用 Chicago 页下注格式，不生成文末参考文献表。
+需要恢复文末参考文献表时，通过 Pandoc 元数据选项覆盖默认值：
+
+```bash
+fexport -t docx -o report.docx document.md -- -M suppress-bibliography=false
+```
+
+模板提供四个可通过 Pandoc Div 或 Span 调用的自定义样式：
+
+- `Author Affiliation`：作者单位，居中且不缩进。
+- `Keywords`：关键词，继承摘要风格且不缩进。
+- `Source Note`：图注、表注与资料来源，使用 9 pt 字号和单倍行距。
+- `Emphasis Dot`：中文着重号，不覆盖字体与字号。
+
+```markdown
+::: {custom-style="Author Affiliation"}
+某某大学经济学院
+:::
+
+::: {custom-style="Keywords"}
+关键词：国际贸易；全球价值链
+:::
+
+::: {custom-style="Source Note"}
+资料来源：作者根据统计数据计算。
+:::
+
+正文中的[着重内容]{custom-style="Emphasis Dot"}。
+```
+
+需要回退旧模板时，在源码仓库中通过 CLI 透传 `--reference-doc`：
+
+```bash
+fexport -t docx -o report.docx document.md -- --reference-doc=share/templates/economic-research-china.docx
+```
+
+模板由 `share/templates/build-fexport-default.pl` 从旧经济研究模板生成。
+修改生成脚本后重新运行它，即可复现默认模板。
+
 ### 使用实时预览
 
 ```bash
