@@ -1,38 +1,25 @@
+% header.tex 建议内容
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage{listings}
+\usepackage{xcolor}
 
-% ============================================================================
-% 表格扩展支持
-% ============================================================================
-% 注: uncode-math, multirow, longtable, booktabs, array 由 Eisvogel/Pandoc 默认加载
-\usepackage{tabu}
-\usepackage{threeparttable}
-\usepackage{threeparttablex}
-\usepackage{colortbl}
-\usepackage{hhline}
-\usepackage{makecell}
+% 定义 Pandoc 必需的命令
+\newcommand{\passthrough}[1]{#1}
 
-% ============================================================================
-% 布局和页面设置
-% ============================================================================
-\usepackage{lscape}
-\usepackage{pdflscape}
-\usepackage{multicol}
-\usepackage{wrapfig}
-\usepackage{indentfirst}    % 首行缩进
-\usepackage{bm}             % 粗体数学符号
+% 干净的 listings 配置
+\lstset{
+  xleftmargin=2em,
+  xrightmargin=2em,
+  numbers=none,
+  numberstyle=\small,
+  basicstyle=\footnotesize\ttfamily,
+  breaklines=true,
+  extendedchars=true,
+  keywordstyle=\color{blue!70},
+  commentstyle=\ttfamily\color{green!40!black},
+  frame=none
+}
 
-% ============================================================================
-% 格式调整
-% ============================================================================
-% 行间距 1.5 倍
-\linespread{1.5}
-
-% 段间距
-\setlength{\parskip}{0.3\baselineskip}
-
-% 首行缩进 2em
-\setlength{\parindent}{2em}
-
-% ============================================================================
-% CJK 中文支持 (XeLaTeX)
-% ============================================================================
-\usepackage[BoldFont, SlantFont]{xeCJK}
+% 避免加载 tabu，改用 Pandoc 默认支持的宏包
+\usepackage{longtable,booktabs,array,calc}

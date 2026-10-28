@@ -9,14 +9,18 @@ use Exporter 'import';
 # 核心依赖
 # 核心依赖
 use IPC::Run3 qw(run3);
+use IO::Handle;    # syswrite 前用 ->flush 防止与缓冲 print 乱序
 use Path::Tiny;
 use File::ShareDir qw(dist_file);
 use FindBin        qw($RealBin);
 use Digest::MD5    qw(md5_hex);
 use File::Spec;
-use POSIX    qw(setsid);
-use IPC::Cmd qw(can_run);
+use POSIX           qw(setsid);
+use IPC::Cmd        qw(can_run);
 use Term::ANSIColor qw(:constants);
+use YAML::XS        qw(Load);
+use Storable        qw(dclone);
+use List::Util      qw(uniq);
 $Term::ANSIColor::AUTORESET = 1;
 
 # 导出函数名更新
@@ -28,6 +32,9 @@ our @EXPORT_OK = qw(
   find_resource
   launch_browser_preview
   stop_browser_preview
+  extract_yaml_frontmatter
+  merge_frontmatter_into_defaults
+  require_hash_args
   run3
 );
 
@@ -35,7 +42,10 @@ our @EXPORT_OK = qw(
 # 1. Pandoc 执行相关
 # ==============================================================================
 
-use Encode qw(encode_utf8);    # Ensure Encode is used
+# encode_utf8 只用于「需要字节流」的去处：pandoc 的 STDIN、以 :raw 打开的日志句柄、
+# 以及 YAML::XS::Load。终端输出不在此列——入口脚本已用 `use open qw(:std :utf8)`
+# 给 STDOUT/STDERR 挂上 :utf8 层，再 encode 一次会把 emoji/中文打成乱码 (⏳ -> â³)。
+use Encode qw(encode_utf8);
 
 # ...
 
@@ -57,12 +67,16 @@ sub run_pandoc {
 
   # 3. 安全执行命令 (IPC::Run3)
   # 捕获 STDERR 到 scalar (字节)，然后手动写入 log，避免 IPC::Run3 直接写 handle 可能的 warn
-  my $stderr_bytes;
+  my ( $stderr_bytes, $stdout_bytes );
+  run3 $cmd_ref, \$stdin_data, \$stdout_bytes, \$stderr_bytes;
 
-  run3 $cmd_ref, \$stdin_data, \undef, \$stderr_bytes;
-
-  if ( $log_fh && defined $stderr_bytes ) {
-    print {$log_fh} $stderr_bytes;
+  # dup 出 :raw 句柄写字节，绕过 use open ':std :utf8' 加上的编码层；
+  # syswrite 在 :utf8 句柄上被 Perl 明确禁止，binmode 会永久改写句柄
+  if ( defined $stdout_bytes && length $stdout_bytes ) {
+    STDOUT->flush;
+    open( my $raw_out, '>>&:raw', \*STDOUT ) or die "Cannot dup STDOUT: $!";
+    print $raw_out $stdout_bytes;
+    close $raw_out;
   }
 
   # 4. 错误检查
@@ -70,6 +84,12 @@ sub run_pandoc {
 
     # $? >> 8 获取真实退出码
     my $exit_code = $? >> 8;
+    if ( defined $stderr_bytes && length $stderr_bytes ) {
+      STDERR->flush;
+      open( my $raw_err, '>>&:raw', \*STDERR ) or die "Cannot dup STDERR: $!";
+      print $raw_err $stderr_bytes;
+      close $raw_err;
+    }
     die "Error: Pandoc exited with code $exit_code. Check logs for details.\n";
   }
 
@@ -199,7 +219,7 @@ sub launch_browser_preview {
   }
 
   # 4. 启动新的后台进程
-  say encode_utf8( "\n" . BOLD . "⏳ Starting browser-sync in background..." . RESET );
+  say "\n" . BOLD . "⏳ Starting browser-sync in background..." . RESET;
 
   my $pid = fork();
   if ( !defined $pid ) {
@@ -239,9 +259,9 @@ sub launch_browser_preview {
   # Save PID and Server Path for identification
   $pid_file->spew_utf8("$pid\n$server_dir");
 
-  say encode_utf8( "\n" . BOLD . GREEN . "✅ Preview Server started" . RESET . " (PID: $pid)" );
-  say encode_utf8( "   📂 Serving:  " . CYAN . $server_dir . RESET );
-  say encode_utf8( "   💡 Control:  " . YELLOW . "fexport --stop-preview" . RESET );
+  say "\n" . BOLD . GREEN . "✅ Preview Server started" . RESET . " (PID: $pid)";
+  say "   📂 Serving:  " . CYAN . $server_dir . RESET;
+  say "   💡 Control:  " . YELLOW . "fexport --stop-preview" . RESET;
 
   # Wait a moment for server to start, then open browser from parent (has display access)
   sleep 1;
@@ -275,14 +295,14 @@ sub stop_browser_preview {
   my $state_dir = $sys_tmp->child("fexport-state");
 
   unless ( $state_dir->is_dir ) {
-    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    say "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET;
     return;
   }
 
   my @pid_files = $state_dir->children(qr/^preview-.*\.pid$/);
 
   if ( @pid_files == 0 ) {
-    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    say "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET;
     return;
   }
 
@@ -301,9 +321,9 @@ sub stop_browser_preview {
     if ( $pid && kill( 0, $pid ) ) {
       push @active_previews,
         {
-        pid      => $pid,
-        path     => $path,
-        pid_file => $pid_file
+          pid      => $pid,
+          path     => $path,
+          pid_file => $pid_file
         };
     }
     else {
@@ -313,7 +333,7 @@ sub stop_browser_preview {
   }
 
   if ( @active_previews == 0 ) {
-    say encode_utf8( "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET );
+    say "\n" . YELLOW . "ℹ️  No active preview servers found." . RESET;
     return;
   }
 
@@ -358,8 +378,8 @@ sub stop_browser_preview {
   for my $item (@to_stop) {
     my $pid = $item->{pid};
     if ( kill( 'TERM', $pid ) ) {
-      say encode_utf8( "🛑 " . BOLD . RED . "Stopped" . RESET . " preview server (PID: $pid)" );
-      say encode_utf8( "   📂 Path: " . CYAN . $item->{path} . RESET );
+      say "🛑 " . BOLD . RED . "Stopped" . RESET . " preview server (PID: $pid)";
+      say "   📂 Path: " . CYAN . $item->{path} . RESET;
       $item->{pid_file}->remove;
 
       # Clean log file (derive name from pid filename)
@@ -374,7 +394,191 @@ sub stop_browser_preview {
     }
   }
 
-  say encode_utf8( "\n" . BOLD . GREEN . "✅ Stopped $stopped_count preview server(s)." . RESET ) if $stopped_count > 0;
+  say "\n" . BOLD . GREEN . "✅ Stopped $stopped_count preview server(s)." . RESET if $stopped_count > 0;
+}
+
+# ==============================================================================
+# 5. YAML Front Matter 提取与结构化深合并
+#    用途：让 markdown 文件 YAML 头部能正确覆盖 fexport 默认值
+# ==============================================================================
+
+# 作用：从 markdown 内容（字符串或行数组引用）中提取 YAML front matter 块
+# 返回：解析后的 hashref；若无头部、解析失败、或非 hash 顶层结构，则返回空 hashref
+# 注意：YAML::XS::Load 期望 UTF-8 字节流，故先 encode_utf8 再喂给它
+sub extract_yaml_frontmatter {
+  my ($content) = @_;
+  $content = join( '', @$content ) if ref $content eq 'ARRAY';
+
+  return {}
+    unless defined $content
+    && $content =~ /\A---\s*\n(.*?)\n(?:---|\.\.\.)\s*\n/s;
+  my $yaml_block = $1;
+
+  my $parsed = eval { Load( encode_utf8($yaml_block) ) };
+  return {} if $@ || ref $parsed ne 'HASH';
+  return $parsed;
+}
+
+# pandoc defaults 文件的顶层键白名单（键名以 pandoc 3.x 长选项名为准，已逐个实测被 pandoc 接受）。
+# 与 Fexport::Pandoc 的 %FEXPORT_ONLY（不传给 pandoc 的 fexport 内部 key）互为补集，改动时两处对照。
+# 用途：front matter 里写的 pandoc 开关，即使当前格式的 defaults 顶层没有预置该键，
+#       也要投影到顶层，而不是落进 metadata —— pandoc 不读 metadata 下的这些键，会静默失效。
+# 反过来也必须严格白名单化：pandoc 遇到未知顶层键会直接报错退出，
+#       所以 title / author 这类真元数据仍须走 metadata 兜底。
+# 刻意不收录的四类键：
+#   1. fexport 掌管的调用层选项：output-file / input-file(s) / defaults / data-dir / verbosity / log-file / trace；
+#   2. 安全与网络开关：sandbox / no-check-certificate / request-headers；
+#   3. 已有别名在列的重复键：reader（=from）、writer（=to）；
+#   4. 本身就是 pandoc 元数据字段、写在 metadata 下即有效的键：bibliography / csl / citation-abbreviations。
+my %PANDOC_DEFAULTS_KEYS = map { $_ => 1 } qw(
+  abbreviations
+  ascii
+  chunk-template
+  cite-method
+  citeproc
+  columns
+  css
+  default-image-extension
+  dpi
+  email-obfuscation
+  embed-resources
+  eol
+  epub-chapter-level
+  epub-cover-image
+  epub-fonts
+  epub-metadata
+  epub-subdirectory
+  epub-title-page
+  extract-media
+  file-scope
+  filters
+  from
+  highlight-style
+  html-math-method
+  html-q-tags
+  identifier-prefix
+  include-after-body
+  include-before-body
+  include-in-header
+  incremental
+  indented-code-classes
+  ipynb-output
+  list-tables
+  listings
+  markdown-headings
+  metadata-file
+  metadata-files
+  number-offset
+  number-sections
+  pdf-engine
+  pdf-engine-opt
+  pdf-engine-opts
+  preserve-tabs
+  reference-doc
+  reference-links
+  reference-location
+  resource-path
+  section-divs
+  self-contained
+  shift-heading-level-by
+  slide-level
+  split-level
+  standalone
+  strip-comments
+  syntax-definition
+  syntax-definitions
+  syntax-highlighting
+  tab-stop
+  table-of-contents
+  template
+  title-prefix
+  to
+  toc
+  toc-depth
+  top-level-division
+  track-changes
+  wrap
+);
+
+# 内部：值层面的深合并（front matter 优先；array 取 uniq union；hash 递归）
+# 与 Fexport::Quarto::_merge_yaml 语义保持一致，但返回新值而非 in-place
+sub _merge_value {
+  my ( $old, $new ) = @_;
+  return $new unless defined $old;
+
+  my $r_old = ref $old || '';
+  my $r_new = ref $new || '';
+
+  if ( $r_old eq 'HASH' && $r_new eq 'HASH' ) {
+    my %merged = %$old;
+    for my $k ( keys %$new ) {
+      $merged{$k} = _merge_value( $merged{$k}, $new->{$k} );
+    }
+    return \%merged;
+  }
+  if ( $r_old eq 'ARRAY' && $r_new eq 'ARRAY' ) {
+    return [ uniq( @$old, @$new ) ];
+  }
+  return $new;    # scalar 或 类型不匹配：front-matter 胜出
+}
+
+# 作用：把扁平的 YAML front matter 投影到 defaults 的结构化层级（顶层/variables/metadata）
+# 决策顺序：
+#   1) 嵌套形式 variables: {} / metadata: {} —— 直接深合并到对应层
+#   2) defaults.variables 中已有该键 —— 合到 variables 层（保证作为显式变量起效）
+#   3) defaults.metadata 中已有该键   —— 合到 metadata 层
+#   4) defaults 顶层已有该键，或该键属于 pandoc defaults 顶层选项
+#                                       —— 合到顶层（template / pdf-engine / citeproc / toc 等）
+#   5) 以上都不是                       —— 安全归宿到 metadata（title / nocite 等）
+# 返回：新构造的 hashref（不修改入参）
+sub merge_frontmatter_into_defaults {
+  my ( $format_opts, $frontmatter ) = @_;
+  return $format_opts unless ref $frontmatter eq 'HASH' && %$frontmatter;
+
+  my $merged = dclone($format_opts);
+
+  for my $key ( keys %$frontmatter ) {
+    my $val = $frontmatter->{$key};
+
+    if ( ( $key eq 'variables' || $key eq 'metadata' ) && ref $val eq 'HASH' ) {
+      $merged->{$key} //= {};
+      $merged->{$key} = _merge_value( $merged->{$key}, $val );
+      next;
+    }
+
+    if ( ref $merged->{variables} eq 'HASH' && exists $merged->{variables}{$key} ) {
+      $merged->{variables}{$key} = _merge_value( $merged->{variables}{$key}, $val );
+    }
+    elsif ( ref $merged->{metadata} eq 'HASH' && exists $merged->{metadata}{$key} ) {
+      $merged->{metadata}{$key} = _merge_value( $merged->{metadata}{$key}, $val );
+    }
+    elsif ( exists $merged->{$key} || $PANDOC_DEFAULTS_KEYS{$key} ) {
+      $merged->{$key} = _merge_value( $merged->{$key}, $val );
+    }
+    else {
+      $merged->{metadata} //= {};
+      $merged->{metadata}{$key} = _merge_value( $merged->{metadata}{$key}, $val );
+    }
+  }
+
+  return $merged;
+}
+
+# 校验渲染器 (render_qmd / render_rmd 等) 的参数契约：
+# 必须传入单个 hashref，且给定的必填 key 都已定义。违约时 die 出可读信息。
+# $name 用于错误消息，@required 为必填 key 列表。
+sub require_hash_args {
+  my ( $name, $args, @required ) = @_;
+
+  die "$name requires a single hash reference argument (got " . ( ref $args || 'non-reference scalar' ) . ")\n"
+    unless ref $args eq 'HASH';
+
+  for my $req (@required) {
+    die "$name missing required argument: '$req'\n"
+      unless defined $args->{$req};
+  }
+
+  return;
 }
 
 1;

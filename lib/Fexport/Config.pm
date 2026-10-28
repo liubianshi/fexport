@@ -6,43 +6,29 @@ use warnings;
 use Exporter 'import';
 use YAML::XS qw(LoadFile);
 use Path::Tiny;
+use Storable qw(dclone);
 
-our @EXPORT_OK = qw(load_config merge_config process_params);
+# 全局配置 YAML::XS，确保整个应用行为一致
+$YAML::XS::Unicode = 1;
+
+our @EXPORT_OK = qw(load_config merge_config process_params get_format_config);
 
 use Fexport::Util qw(find_resource);
 
-# Load Global Defaults from YAML file
+use Fexport::Defaults qw(get_defaults);
+
+# Raw format sections from defaults (populated by _load_defaults, keyed by format name)
+my %FORMAT_RAW;
+
+# Load Global Defaults from Fexport::Defaults
 sub _load_defaults {
-  my $defaults_file = find_resource("defaults.yaml");
-  return {} unless defined $defaults_file && -f $defaults_file;
+  my $raw = get_defaults();
 
-  my $raw = eval { LoadFile($defaults_file) };
-  if ($@) {
-    warn "[Warn] Failed to load defaults file: $@";
-    return {};
-  }
+  # 提取格式特定配置 (保持原样，通常为连字符，直接用于 Pandoc --defaults)
+  %FORMAT_RAW = %{ $raw->{formats} // {} };
 
-  # 提取 _defaults 部分作为 fexport 默认值基础
-  my $fexport_defaults = delete $raw->{_defaults} // {};
-  
-  # 提取 pandoc 配置
-  my $pandoc_config = $raw->{pandoc} // {};
-  
-  # 从 _markdown.extensions 构建 markdown-fmt 字符串
-  my $extensions = $raw->{_markdown}{extensions};
-  my @exts_list  = ( defined $extensions && ref($extensions) eq 'ARRAY' ) ? @$extensions : ();
-  
-  $pandoc_config->{'markdown-fmt'} = join( '+', 'markdown', @exts_list );
-  
-
-  # 合并: fexport 默认值 + pandoc 配置
-  $fexport_defaults->{pandoc} = $pandoc_config if %$pandoc_config;
-  
-  # 保留格式配置供 Quarto 模块使用
-  # 注意: 格式配置由 Quarto.pm 直接从文件读取
-  
-  # Convert hyphenated keys to underscored keys recursively
-  return _convert_keys($fexport_defaults);
+  # 返回全局配置并转换 key (连字符 -> 下划线，方便 Perl 内部逻辑使用)
+  return _convert_keys( $raw->{global} // {} );
 }
 
 sub _convert_keys {
@@ -71,6 +57,31 @@ my $DEFAULTS;
 sub _get_defaults {
   $DEFAULTS //= _load_defaults();
   return $DEFAULTS;
+}
+
+# 格式配置缓存
+my %FORMAT_CONFIG_CACHE;
+
+sub _process_format_config {
+  my ($format) = @_;
+  return {} unless exists $FORMAT_RAW{$format};
+
+  my $copy = dclone( $FORMAT_RAW{$format} );
+
+  # 将 from-extensions 数组转换为 pandoc from 字符串
+  if ( my $extensions = delete $copy->{'from-extensions'} ) {
+    if ( ref $extensions eq 'ARRAY' && @$extensions ) {
+      $copy->{from} = 'markdown+' . join( '+', @$extensions );
+    }
+  }
+
+  return $copy;
+}
+
+sub get_format_config {
+  my ($format) = @_;
+  _get_defaults();    # 确保 %FORMAT_RAW 已填充
+  return $FORMAT_CONFIG_CACHE{$format} //= _process_format_config($format);
 }
 
 sub load_config {
@@ -108,7 +119,6 @@ sub load_config {
   # 增加 -f 判断确保是文件
   return {} unless -f $file;
 
-  # eval 捕获异常是个好习惯
   my $config = eval { LoadFile($file) };
   if ($@) {
     warn "[Warn] Failed to load config file '$file': $@";
@@ -121,12 +131,70 @@ sub merge_config {
   my ( $file_config, $cli_opts ) = @_;
 
   # 链式合并：Defaults -> File -> CLI
+  # 注意：_get_defaults() 同时承担首次填充 %FORMAT_RAW 的副作用，必须先于 formats 合并执行
   my $merged = _get_defaults();
 
-  $merged = _recursive_merge( $merged, $file_config ) if $file_config;
-  $merged = _recursive_merge( $merged, $cli_opts )    if $cli_opts;
+  if ( ref $file_config eq 'HASH' ) {
+
+    # 浅拷贝避免污染调用方（merge_config 在语义上应只读 $file_config）
+    my %local = %$file_config;
+
+    # 1) global.* 上提，与 defaults 同层（与 _load_defaults 的解构对称）
+    if ( my $g = delete $local{global} ) {
+      $merged = _recursive_merge( $merged, $g ) if ref $g eq 'HASH';
+    }
+
+    # 2) formats.* 并入 %FORMAT_RAW：同名格式深合并，新增格式直接添加
+    if ( my $f = delete $local{formats} ) {
+      if ( ref $f eq 'HASH' ) {
+        for my $fmt ( keys %$f ) {
+          $FORMAT_RAW{$fmt} =
+            exists $FORMAT_RAW{$fmt}
+            ? _recursive_merge( $FORMAT_RAW{$fmt}, $f->{$fmt} )
+            : $f->{$fmt};
+        }
+        %FORMAT_CONFIG_CACHE = ();    # 清缓存，避免 get_format_config 返回旧 dclone
+      }
+    }
+
+    # 3) 剩余顶层键走原合并（兼容扁平 yaml: to / pandoc / outfile ...）
+    $merged = _recursive_merge( $merged, \%local ) if %local;
+  }
+
+  $merged = _recursive_merge( $merged, $cli_opts ) if $cli_opts;
+
+  # 将格式特定配置挂载到 format_opts，供 build_cmd / Quarto 使用
+  if ( defined $merged->{to} ) {
+    $merged->{format_opts} = get_format_config( $merged->{to} );
+  }
 
   return $merged;
+}
+
+# markdown 家族扩展名 → 渲染器分派键。
+# script/fexport 按 md / rmd / qmd 三个字符串挑渲染器，故必须先归一：
+# 未归一时 .Rmd（R Markdown 的规范写法）、.markdown、.rmarkdown 会落空全部分支，
+# md_lines 保持为空，pandoc 收到空 stdin 却以退出码 0 结束，静默产出空文档。
+# 键集合需与 Fexport::Defaults 的 pandoc.markdown-exts 保持一致。
+my %FROM_ALIAS = (
+  md        => 'md',
+  markdown  => 'md',
+  rmd       => 'rmd',
+  rmarkdown => 'rmd',
+  qmd       => 'qmd',
+  quarto    => 'qmd',
+);
+
+# 归一到分派键；无法识别的扩展名按 markdown 处理，但要出声，不能静默
+sub _normalize_from {
+  my ($from) = @_;
+  return 'md' unless defined $from && length $from;
+
+  my $key = $FROM_ALIAS{ lc $from };
+  return $key if $key;
+
+  warn "[Warn] Unknown input format '$from', treating it as markdown.\n";
+  return 'md';
 }
 
 sub process_params {
@@ -162,7 +230,8 @@ sub process_params {
 
   # 3. 推断格式
   $opts->{from} //= ( $resolved_infile && $resolved_infile =~ /\.([^.]+)$/ ? $1 : undef ) || 'md';
-  $opts->{to}   //= "html";
+  $opts->{from} = _normalize_from( $opts->{from} );
+  $opts->{to} //= "html";
 
   # 4. 确定最终输出文件路径 (修正后的逻辑)
   # 逻辑核心：如果存在 outdir，则 outfile 被视为基于 outdir 的相对路径
@@ -222,11 +291,11 @@ sub process_params {
     }
   }
 
-  # 5. 返回相对于 work_dir 的路径 (因为脚本后续会 chdir 到 work_dir)
-  my $rel_outfile = $abs_outfile->relative($work_dir);
-
-  # 返回字符串路径 (显式 stringify 避免对象泄露给不识别 Path::Tiny 的旧代码)
-  return ( "$work_dir", "$resolved_infile", "$rel_outfile" );
+  # 5. 返回字符串路径 (显式 stringify 避免对象泄露给不识别 Path::Tiny 的旧代码)
+  # outfile 返回绝对路径：fexport 主脚本对 cwd/ARGV 做了 decode_utf8，得到带 UTF-8
+  # flag 的宽字符串。若返回相对路径，下游 Path::Tiny->absolute() 会与 Cwd::getcwd()
+  # 的字节串拼接，触发 byte→Latin-1 升级，最终 syscall 看到双重 UTF-8 编码而 ENOENT。
+  return ( "$work_dir", "$resolved_infile", "$abs_outfile" );
 }
 
 sub _recursive_merge {

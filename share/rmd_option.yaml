@@ -1,3 +1,8 @@
+# 本文件由 share/parse_rmd.R 用 R 的 yaml 包读取，路径值必须加引号：
+# 裸写的 `.` 会被 yaml 包当数字解析，得到 NA_real_，
+# 传给 rmarkdown::render(output_dir = NA) 后报 "invalid filename argument"。
+# 写 output_dir: "." ，不写 output_dir: . 。
+
 # ==============================================================================
 # 基础配置模板 (Anchors)
 # ==============================================================================
@@ -33,7 +38,7 @@ pdf:
   out: rmarkdown::pdf_document
   ext: pdf
   intermediates_dir: ./cache/draft
-  output_dir: .
+  output_dir: "."
   opt:
     pandoc_args: *tex_pandoc_args
 
@@ -57,7 +62,7 @@ rdocxbook:
   ext: docx
   outfile: draft.docx
   intermediates_dir: _cache
-  output_dir: .
+  output_dir: "."
   run_pandoc: true
   !!merge <<: *common_captions
   opt:
@@ -72,7 +77,7 @@ docxbook:
   ext: docx
   outfile: draft.docx
   intermediates_dir: _cache
-  output_dir: .
+  output_dir: "."
   run_pandoc: true
   !!merge <<: *common_captions
   opt:
@@ -84,8 +89,8 @@ docx:
   render: rmarkdown::render
   out: officedown::rdocx_document
   ext: docx
-  intermediates_dir: .
-  output_dir: .
+  intermediates_dir: "."
+  output_dir: "."
   run_pandoc: true
   !!merge <<: *common_captions
   opt:

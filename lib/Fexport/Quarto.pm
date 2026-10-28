@@ -10,7 +10,7 @@ use Exporter 'import';
 use Path::Tiny;
 use Digest::MD5 qw(md5_hex);
 use File::Spec;
-use YAML                 qw(LoadFile DumpFile Load);
+use YAML::XS             qw(LoadFile DumpFile);
 use Scope::Guard         qw(guard);
 use List::Util           qw(uniq);
 use IPC::Run3            qw(run3);
@@ -18,13 +18,18 @@ use POSIX                qw(setsid);
 use IPC::Cmd             qw(can_run);
 use Cwd                  qw(getcwd);
 use Cwd                  qw(getcwd);
-use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview);
+use Fexport::Util        qw(save_lines find_resource find_pandoc_datadir launch_browser_preview require_hash_args);
+use Fexport::Config      qw(get_format_config);
 use Fexport::PostProcess qw(fix_citation_etal postprocess_html postprocess_latex postprocess_docx);
 use Term::ANSIColor      qw(:constants);
 use IPC::Run3            qw(run3);
-use Encode               qw(encode_utf8);
+use Encode               qw(decode_utf8);
 
 $Term::ANSIColor::AUTORESET = 1;
+
+# 让 YAML::XS 把 JSON::PP::Boolean 序列化为裸词 true/false（与 Pandoc.pm 一致），
+# 否则写入 quarto 的 _metadata.yml 会带上 quarto 无法识别的 Perl 私有布尔标签。
+$YAML::XS::Boolean = "JSON::PP";
 
 our @EXPORT_OK = qw(render_qmd);
 
@@ -38,6 +43,9 @@ my $PANDOC_DIR = path( find_pandoc_datadir() );
 sub render_qmd {
   my ($args) = @_;
 
+  # 参数契约：必须传入单个 hashref（历史上曾用位置参数调用而崩溃，见 t/render_contract.t）
+  require_hash_args( 'render_qmd', $args, qw(infile to outfile) );
+
   # 解构参数
   my $infile_raw = $args->{infile};
   my $outformat  = $args->{to};
@@ -47,6 +55,11 @@ sub render_qmd {
   my $verbose    = $args->{verbose};
   my $keep       = $args->{keep};
   my $browser    = $args->{browser};
+
+  # `--` 之后的透传参数。Quarto 把无法识别的选项原样交给 pandoc，
+  # 因此 --bibliography / --csl 之类必须走到这里；漏掉它会让 citeproc
+  # 拿不到书目、把所有 key 渲染成 `key?`，PDF 侧再连锁成 \citeproc 未定义。
+  my $pandoc_opts = $args->{pandoc_opts} // [];
 
   # 1. 路径对象化
   my $infile     = path($infile_raw)->absolute;
@@ -70,6 +83,7 @@ sub render_qmd {
     local_outfile => $local_outfile,
     lang          => $lang,
     verbose       => $verbose,
+    pandoc_opts   => $pandoc_opts,
   );
 
   # 6. 后处理与移动
@@ -92,26 +106,7 @@ sub render_qmd {
 
 sub _load_format_config {
   my ($outformat) = @_;
-
-  my $config_file   = find_resource("defaults.yaml");
-  my $all_options   = -e $config_file ? LoadFile($config_file) : {};
-  my $format_config = $all_options->{$outformat} // {};
-
-  # 设置 FEXPORT_SHARE 环境变量，指向 share 目录
-  my $share_dir = path($config_file)->parent->stringify;
-  local $ENV{FEXPORT_SHARE} = $share_dir;
-
-  # 展开环境变量
-  _substitute_env($format_config);
-
-  # 处理 from-extensions: 将扩展列表转换为 from 字符串
-  if ( my $extensions = delete $format_config->{'from-extensions'} ) {
-    if ( ref $extensions eq 'ARRAY' && @$extensions ) {
-      $format_config->{from} = 'markdown+' . join( '+', @$extensions );
-    }
-  }
-
-  return $format_config;
+  return get_format_config($outformat);
 }
 
 sub _extract_pandoc_options {
@@ -205,8 +200,8 @@ sub _resolve_template_path {
 
 sub _run_quarto_with_metadata {
   my %args = @_;
-  my ( $infile, $format_config, $quarto_target, $local_outfile, $lang, $verbose ) =
-    @args{qw(infile format_config quarto_target local_outfile lang verbose)};
+  my ( $infile, $format_config, $quarto_target, $local_outfile, $lang, $verbose, $pandoc_opts ) =
+    @args{qw(infile format_config quarto_target local_outfile lang verbose pandoc_opts)};
 
   # 切换工作目录到 input file 所在目录
   # 这是为了解决 Quarto embed-resources 在 CWD 查找资源的问题
@@ -240,26 +235,58 @@ sub _run_quarto_with_metadata {
   $lang //= $meta_data->{lang};
   $meta_data->{lang} = $lang;
 
-  # 写入临时 _metadata.yml
+  # 写入临时 _metadata.yml（YAML::XS 在上面配置了 JSON::PP 布尔，直接输出裸词 true/false）
   DumpFile( $meta_file->stringify, $meta_data );
   $generated_meta = 1;
 
   # 构建并执行 Quarto 命令
   # 注意：此时 CWD 已经是 input dir，所以 execute-dir 为 .
-  my @cmd = _build_quarto_command( $infile->basename, $quarto_target, $local_outfile, $meta_data, $verbose );
+  my @cmd = _build_quarto_command(
+    infile_name   => $infile->basename,
+    quarto_target => $quarto_target,
+    local_outfile => $local_outfile,
+    meta_data     => $meta_data,
+    verbose       => $verbose,
+    pandoc_opts   => $pandoc_opts,
+  );
 
-  print encode_utf8( CYAN . "🚀 Running Quarto render..." . RESET . "\n" );
-  print FAINT, "   Command: ", join( " ", @cmd ), "\n", RESET if $verbose;
+  # 注意：脚本层已通过 `use open qw(:std :utf8)` 给 STDOUT/STDERR 挂上 :utf8 层，
+  # 这里不能再 encode_utf8，否则 emoji 会被编码两遍变成乱码 (🚀 -> ð...)。
+  print CYAN . "🚀 Running Quarto render..." . RESET . "\n";
+  print FAINT . "   Command: " . join( " ", @cmd ) . "\n" . RESET if $verbose;
 
-  system(@cmd) == 0 or die encode_utf8( RED . "❌ Failed to run quarto: $?" . RESET );
+  my $exit_code;
+  if ($verbose) {
 
-  print encode_utf8( GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n" );
+    # verbose：让 quarto 把输出直接流到终端 (quarto 自行处理编码)
+    system(@cmd);
+    $exit_code = $?;
+  }
+  else {
+    # 非 verbose：捕获 quarto 的 stdout+stderr，仅在失败时展示，
+    # 否则 --quiet 会把真正的报错也一并吞掉，只剩一个退出码。
+    my $output = '';
+    run3 \@cmd, \undef, \$output, \$output;
+    $exit_code = $?;
+    print decode_utf8($output) if $exit_code != 0 && length $output;
+  }
+
+  if ( $exit_code != 0 ) {
+    die RED
+      . sprintf( "❌ Quarto render failed (exit code %d).\n", $exit_code >> 8 )
+      . "   Re-run with -v to see the full command and quarto output."
+      . RESET . "\n";
+  }
+
+  print GREEN . "✅ Intermediate output created: " . $local_outfile->basename . RESET . "\n";
 
   return $lang;
 }
 
 sub _build_quarto_command {
-  my ( $infile_name, $quarto_target, $local_outfile, $meta_data, $verbose ) = @_;
+  my %args = @_;
+  my ( $infile_name, $quarto_target, $local_outfile, $meta_data, $verbose, $pandoc_opts ) =
+    @args{qw(infile_name quarto_target local_outfile meta_data verbose pandoc_opts)};
 
   # Base command array with required arguments
   # infile_name 只传文件名，因为我们在 input 目录下运行
@@ -272,22 +299,24 @@ sub _build_quarto_command {
   push @cmd, "--quiet" unless $verbose;
 
   # Add Lua filters for document processing
-  if ( $quarto_target eq 'docx' ) {
-    push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/quarto_docx_embeded_table.lua")->stringify;
+  my $docx_embeded_table_filter = find_resource("quarto_docx_embeded_table.lua");
+  if ( $quarto_target eq 'docx' && $docx_embeded_table_filter && -e $docx_embeded_table_filter ) {
+    push @cmd, "--lua-filter", $docx_embeded_table_filter;
   }
 
   my $rsbc_filter = find_resource("rsbc.lua");
   if ( $rsbc_filter && -e $rsbc_filter ) {
     push @cmd, "--lua-filter", $rsbc_filter;
   }
-  else {
-    push @cmd, "--lua-filter", $PANDOC_DIR->child("filters/rsbc.lua")->stringify;
-  }
 
   # Explicitly pass pdf-engine if specified in metadata
   if ( my $pdf_engine = $meta_data->{'pdf-engine'} ) {
     push @cmd, "--pdf-engine=$pdf_engine";
   }
+
+  # 用户在 `--` 之后给出的参数放在最末：quarto/pandoc 都是后者胜出，
+  # 这样手写选项才能压过上面的默认值（含 --quiet 与内置 filter）。
+  push @cmd, @$pandoc_opts if $pandoc_opts && @$pandoc_opts;
 
   return @cmd;
 }
@@ -331,7 +360,7 @@ sub _process_html_output {
   postprocess_html( \@lines );
 
   path($outfile_dest)->spew_utf8(@lines);
-  print encode_utf8( BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n" );
+  print BOLD . GREEN . "✨ HTML generated: $outfile_dest" . RESET . "\n";
   launch_browser_preview( $outfile_dest, $browser ) if $preview;
 }
 
@@ -358,7 +387,7 @@ sub _process_pdf_output {
     ( 'latexmk', '-xelatex', "-outdir=" . $temp_dir->stringify, $verbose ? () : '-quiet', $temp_tex->stringify );
 
   if ($verbose) {
-    print encode_utf8( CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n" );
+    print CYAN . "⚙️  Compiling PDF with latexmk..." . RESET . "\n";
     system(@cmd) == 0 or die RED "❌ Failed to render LaTeX file: $?";
   }
   else {
@@ -394,7 +423,10 @@ sub _process_pdf_output {
     }
 
     if ( $exit_code != 0 ) {
-      die encode_utf8( RED . "❌ Failed to render LaTeX file:\n$output" . RESET );
+
+      # $output 是 run3 捕获的字节串，需先 decode 再交给带 :utf8 层的 STDERR，
+      # 否则中文文件名/日志会以乱码呈现。
+      die RED . "❌ Failed to render LaTeX file:\n" . decode_utf8($output) . RESET . "\n";
     }
   }
 
@@ -402,7 +434,7 @@ sub _process_pdf_output {
   my $generated_pdf = $temp_dir->child("intermediate.pdf");
   if ( $generated_pdf->exists ) {
     $generated_pdf->move($final_pdf_dest);
-    print encode_utf8( BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n" );
+    print BOLD . GREEN . "✨ PDF generated: $final_pdf_dest" . RESET . "\n";
   }
   else {
     die RED "❌ Error: latexmk finished but PDF not found.";
@@ -435,36 +467,6 @@ sub _process_docx_output {
 # ============================================================================
 # 通用工具函数
 # ============================================================================
-
-sub _substitute_env {
-  my ($data) = @_;
-  return unless defined $data;
-
-  my $ref = ref $data;
-
-  # Handle scalar: substitute environment variables in-place
-  # Matches $VAR or ${VAR} and replaces with ENV value or empty string
-  if ( !$ref ) {
-    $_[0] =~ s/\$\{?(\w+)\}?/exists $ENV{$1} ? $ENV{$1} : ''/eg;
-  }
-
-  # Handle hash: recursively substitute values
-  elsif ( $ref eq 'HASH' ) {
-    _substitute_env($_) for values %$data;
-  }
-
-  # Handle array: recursively substitute elements
-  elsif ( $ref eq 'ARRAY' ) {
-    _substitute_env($_) for @$data;
-  }
-
-  # Handle scalar reference: dereference and substitute
-  elsif ( $ref eq 'SCALAR' ) {
-    _substitute_env($$data);
-  }
-
-  return;
-}
 
 sub _merge_yaml {
   my ( $dest, $src ) = @_;
