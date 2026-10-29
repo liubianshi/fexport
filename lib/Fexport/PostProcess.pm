@@ -11,6 +11,18 @@ use Path::Tiny;
 use Archive::Zip qw( :ERROR_CODES :CONSTANTS );
 use XML::LibXML;
 use Mojo::DOM;
+use Scalar::Util qw(refaddr);
+
+my $W_NS        = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+my $M_NS        = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+my @W_PPR_ORDER = qw(
+  pStyle keepNext keepLines pageBreakBefore framePr widowControl numPr suppressLineNumbers pBdr shd tabs
+  suppressAutoHyphens kinsoku wordWrap overflowPunct topLinePunct autoSpaceDE autoSpaceDN bidi adjustRightInd
+  snapToGrid spacing ind contextualSpacing mirrorIndents suppressOverlap jc textDirection textAlignment
+  textboxTightWrap outlineLvl divId cnfStyle rPr sectPr pPrChange
+);
+my %W_PPR_ORDER;
+@W_PPR_ORDER{@W_PPR_ORDER} = ( 0 .. $#W_PPR_ORDER );
 
 our @EXPORT_OK = qw(
   postprocess_docx
@@ -26,6 +38,7 @@ our @EXPORT_OK = qw(
 
 sub postprocess_docx {
   my $docx_path = shift;
+
   # Archive::Zip requires a string path, not a Path::Tiny object
   $docx_path = "$docx_path";
 
@@ -69,8 +82,8 @@ sub _process_docx_dom {
   my $xpc = XML::LibXML::XPathContext->new($dom);
 
   # 注册命名空间，DOCX 核心
-  $xpc->registerNs( 'w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main' );
-  $xpc->registerNs( 'm', 'http://schemas.openxmlformats.org/officeDocument/2006/math' );
+  $xpc->registerNs( 'w', $W_NS );
+  $xpc->registerNs( 'm', $M_NS );
 
   # --- A. 逻辑修复: 将 "表 X:" 的样式从 BodyText 改为 TableCaption ---
   # 查找所有样式为 BodyText 的段落节点
@@ -137,6 +150,7 @@ sub _process_docx_dom {
       # 仅当文本发生变化时才写回 DOM
       if ( length($text) != $original_len || $text ne $text_node->textContent ) {
         $text_node->removeChildNodes();
+
         # 必须保留 xml:space="preserve" 属性吗？
         # 如果 text 变空了，可能需要保留空节点或者删除？
         # Word 通常允许空 w:t，但最好保留
@@ -144,6 +158,206 @@ sub _process_docx_dom {
       }
     }
   }
+  _layout_numbered_equations( $dom, $xpc );
+}
+
+sub _layout_numbered_equations {
+  my ( $dom, $xpc ) = @_;
+  my %width_cache;
+
+  for my $p_node ( $xpc->findnodes('//w:p[w:bookmarkStart[starts-with(@w:name, "eq-")]]') ) {
+
+    # sectPr 必须留在正文层级，不能随公式段落搬入表格单元格。
+    next if $xpc->exists( 'w:pPr/w:sectPr', $p_node );
+
+    my @math_paras = $xpc->findnodes( './/m:oMathPara', $p_node );
+    next unless @math_paras == 1;
+    my @maths = $xpc->findnodes( './/m:oMath', $p_node );
+    next unless @maths == 1 && $maths[0]->parentNode == $math_paras[0];
+
+    my $math          = $maths[0];
+    my @math_children = grep { $_->nodeType == 1 } $math->childNodes;
+    my ( @number_runs, $number );
+    my $candidate = '';
+    for my $child ( reverse @math_children ) {
+      last unless $child->namespaceURI eq $M_NS && $child->localName eq 'r';
+      my @text_nodes = $xpc->findnodes( './m:t', $child );
+      last unless @text_nodes == 1;
+      my @unexpected = grep { $_->nodeType == 1 && $_->localName ne 'rPr' && $_->localName ne 't' } $child->childNodes;
+      last if @unexpected;
+
+      unshift @number_runs, $child;
+      $candidate = $text_nodes[0]->textContent . $candidate;
+      if ( $candidate =~ /^\(\d+(?:\.\d+)*\)$/ ) {
+        $number = $candidate;
+        last;
+      }
+    }
+    next unless defined $number;
+
+    my $content_width = _equation_content_width( $xpc, $p_node, \%width_cache );
+    next unless defined $content_width;
+    my $side_width   = int( $content_width / 10 );
+    my $center_width = $content_width - 2 * $side_width;
+    next unless $side_width > 0;
+
+    _remove_equation_number_separator( $xpc, $number_runs[0] );
+    $_->unbindNode() for @number_runs;
+    _format_equation_paragraph( $dom, $xpc, $p_node, 'center' );
+
+    my ( $table, $center_cell ) =
+      _build_equation_table( $dom, $xpc, $content_width, $side_width, $center_width, $number );
+    $p_node->replaceNode($table);
+    $center_cell->appendChild($p_node);
+  }
+}
+
+sub _equation_content_width {
+  my ( $xpc, $p_node, $cache ) = @_;
+  my ($sect_pr) = $xpc->findnodes( 'following::w:sectPr[1]', $p_node );
+  return unless $sect_pr;
+  my $cache_key = refaddr($sect_pr);
+  return $cache->{$cache_key} if exists $cache->{$cache_key};
+
+  my ($pg_sz)  = $xpc->findnodes( './w:pgSz',  $sect_pr );
+  my ($pg_mar) = $xpc->findnodes( './w:pgMar', $sect_pr );
+  return unless $pg_sz && $pg_mar;
+
+  my $page_width = $pg_sz->getAttribute('w:w');
+  my $left       = $pg_mar->getAttribute('w:left');
+  my $right      = $pg_mar->getAttribute('w:right');
+  return unless defined $page_width    && defined $left    && defined $right;
+  return unless $page_width =~ /^\d+$/ && $left =~ /^\d+$/ && $right =~ /^\d+$/;
+
+  my $content_width = $page_width - $left - $right;
+  return unless $content_width > 0;
+  $cache->{$cache_key} = $content_width;
+  return $content_width;
+}
+
+sub _remove_equation_number_separator {
+  my ( $xpc, $number_run ) = @_;
+  my $previous = $number_run->previousSibling;
+  $previous = $previous->previousSibling while $previous && $previous->nodeType != 1;
+  return unless $previous && $previous->namespaceURI eq $M_NS && $previous->localName eq 'r';
+
+  my @text_nodes = $xpc->findnodes( './m:t', $previous );
+  return unless @text_nodes;
+  my $text_node = $text_nodes[-1];
+  my $text      = $text_node->textContent;
+  return unless $text =~ s/[\h\r\n]+$//;
+
+  if ( !length($text) && join( '', map { $_->textContent } @text_nodes ) eq '' ) {
+    $previous->unbindNode();
+    return;
+  }
+  $text_node->removeChildNodes();
+  $text_node->appendText($text) if length $text;
+}
+
+sub _format_equation_paragraph {
+  my ( $dom, $xpc, $p_node, $alignment, $before ) = @_;
+  my ($p_pr) = $xpc->findnodes( './w:pPr', $p_node );
+  unless ($p_pr) {
+    $p_pr = $dom->createElementNS( $W_NS, 'w:pPr' );
+    if ( $p_node->firstChild ) {
+      $p_node->insertBefore( $p_pr, $p_node->firstChild );
+    }
+    else {
+      $p_node->appendChild($p_pr);
+    }
+  }
+
+  my $spacing = _ensure_ppr_child( $dom, $xpc, $p_pr, 'spacing' );
+  $spacing->setAttribute( 'w:after',  0 );
+  $spacing->setAttribute( 'w:before', $before ) if defined $before;
+  my $ind = _ensure_ppr_child( $dom, $xpc, $p_pr, 'ind' );
+  $ind->setAttribute( 'w:firstLine',      0 );
+  $ind->setAttribute( 'w:firstLineChars', 0 );
+  for my $attribute (qw(hanging hangingChars)) {
+    $ind->removeAttribute("w:$attribute") if $ind->hasAttribute("w:$attribute");
+  }
+  my $jc = _ensure_ppr_child( $dom, $xpc, $p_pr, 'jc' );
+  $jc->setAttribute( 'w:val', $alignment );
+}
+
+sub _ensure_ppr_child {
+  my ( $dom, $xpc, $p_pr, $name ) = @_;
+  my ($child) = $xpc->findnodes( "./w:$name", $p_pr );
+  return $child if $child;
+
+  $child = $dom->createElementNS( $W_NS, "w:$name" );
+  my $rank = $W_PPR_ORDER{$name};
+  for my $sibling ( $p_pr->childNodes ) {
+    next unless $sibling->nodeType == 1;
+    my $sibling_rank = $W_PPR_ORDER{ $sibling->localName };
+    next unless defined $sibling_rank && $sibling_rank > $rank;
+    $p_pr->insertBefore( $child, $sibling );
+    return $child;
+  }
+  $p_pr->appendChild($child);
+  return $child;
+}
+
+sub _new_w_element {
+  my ( $dom, $name, $attributes, @children ) = @_;
+  my $element = $dom->createElementNS( $W_NS, "w:$name" );
+  for my $attribute ( keys %{$attributes} ) {
+    $element->setAttribute( "w:$attribute", $attributes->{$attribute} );
+  }
+  $element->appendChild($_) for @children;
+  return $element;
+}
+
+sub _new_equation_side_paragraph {
+  my ( $dom, $xpc, $alignment, $number ) = @_;
+  my $paragraph = _new_w_element( $dom, 'p', {} );
+  _format_equation_paragraph( $dom, $xpc, $paragraph, $alignment, 0 );
+  return $paragraph unless defined $number;
+
+  my $text = _new_w_element( $dom, 't', {} );
+  $text->appendText($number);
+  my $run = _new_w_element( $dom, 'r', {}, $text );
+  $paragraph->appendChild($run);
+  return $paragraph;
+}
+
+sub _new_equation_table_cell {
+  my ( $dom, $width, $paragraph ) = @_;
+  my $tc_w    = _new_w_element( $dom, 'tcW',    { w   => $width, type => 'dxa' } );
+  my $v_align = _new_w_element( $dom, 'vAlign', { val => 'center' } );
+  my $tc_pr   = _new_w_element( $dom, 'tcPr', {}, $tc_w, $v_align );
+  my $cell    = _new_w_element( $dom, 'tc', {}, $tc_pr );
+  $cell->appendChild($paragraph) if $paragraph;
+  return $cell;
+}
+
+sub _build_equation_table {
+  my ( $dom, $xpc, $content_width, $side_width, $center_width, $number ) = @_;
+  my $tbl_pr = _new_w_element(
+    $dom, 'tblPr',
+    {},
+    _new_w_element( $dom, 'tblW',   { w => $content_width, type => 'dxa' } ),
+    _new_w_element( $dom, 'tblInd', { w => 0,              type => 'dxa' } ),
+    _new_w_element(
+      $dom, 'tblBorders', {},
+      map { _new_w_element( $dom, $_, { val => 'nil' } ) } qw(top left bottom right insideH insideV)
+    ),
+    _new_w_element( $dom, 'tblLayout', { type => 'fixed' } ),
+    _new_w_element(
+      $dom, 'tblCellMar',
+      {},   map { _new_w_element( $dom, $_, { w => 0, type => 'dxa' } ) } qw(top left bottom right)
+    ),
+  );
+  my $tbl_grid = _new_w_element( $dom, 'tblGrid', {},
+    map { _new_w_element( $dom, 'gridCol', { w => $_ } ) } ( $side_width, $center_width, $side_width ) );
+  my $left_cell   = _new_equation_table_cell( $dom, $side_width,   _new_equation_side_paragraph( $dom, $xpc, 'left' ) );
+  my $center_cell = _new_equation_table_cell( $dom, $center_width, undef );
+  my $right_cell =
+    _new_equation_table_cell( $dom, $side_width, _new_equation_side_paragraph( $dom, $xpc, 'right', $number ) );
+  my $row   = _new_w_element( $dom, 'tr',  {}, $left_cell, $center_cell, $right_cell );
+  my $table = _new_w_element( $dom, 'tbl', {}, $tbl_pr,    $tbl_grid,    $row );
+  return ( $table, $center_cell );
 }
 
 # ==============================================================================
@@ -196,7 +410,7 @@ sub postprocess_html {
 # ==============================================================================
 
 sub postprocess_latex {
-  my ($content_ref, $source_dir) = @_;
+  my ( $content_ref, $source_dir ) = @_;
 
   # 预编译正则
   state $words       = qr/[\w\p{P}\s]*\p{Han}+[\w\p{P}\s]*/;
@@ -208,9 +422,9 @@ sub postprocess_latex {
 
   my $pre_line = "";
   my @table_labels;
-  
+
   # ... (macro injection block unchanged) ...
-  
+
   # 0. 注入 pandocbounded 兼容性宏 (Pandoc 3.x+ 生成的新命令，老模板可能缺失)
   my $pandoc_bounded_macro = <<'EOF';
 \makeatletter
@@ -231,14 +445,14 @@ EOF
   # 将宏插入到 \begin{document} 之前 (最安全的位置)
   my $inserted = 0;
 
-  for (my $i = 0; $i < @{$content_ref}; $i++) {
-    if ($content_ref->[$i] =~ /^\s*\\begin\{document\}/) {
+  for ( my $i = 0; $i < @{$content_ref}; $i++ ) {
+    if ( $content_ref->[$i] =~ /^\s*\\begin\{document\}/ ) {
       splice @{$content_ref}, $i, 0, $pandoc_bounded_macro;
       $inserted = 1;
       last;
     }
   }
-  
+
   # Fallback: 插入到最前面 (仅当找不到 document 时，可能有风险但好过不插)
   unless ($inserted) {
     unshift @{$content_ref}, $pandoc_bounded_macro;
@@ -312,24 +526,24 @@ sub fix_citation_etal {
 1;
 
 sub _fix_image_path {
-  my ($prefix, $path_str, $source_dir) = @_;
+  my ( $prefix, $path_str, $source_dir ) = @_;
   my $fixed = $prefix . $path_str . "}";
-  
+
   # Case a: Quarto corrupted absolute path (./tmp/... -> /tmp/...)
-  if ($path_str =~ /^\.\//) {
-      my $abs_candidate = substr($path_str, 1); # remove leading .
-      if (-e $abs_candidate) {
-          return $prefix . $abs_candidate . "}";
-      }
+  if ( $path_str =~ /^\.\// ) {
+    my $abs_candidate = substr( $path_str, 1 );    # remove leading .
+    if ( -e $abs_candidate ) {
+      return $prefix . $abs_candidate . "}";
+    }
   }
-  
+
   # Case b: Relative path from subdir (only if not fixed by Case a and doesn't exist in root)
-  if (! -e $path_str && $source_dir && $path_str !~ /^\//) {
-      my $rel_path = path($source_dir)->child($path_str);
-      if ($rel_path->exists) {
-           return $prefix . $rel_path . "}";
-      }
+  if ( !-e $path_str && $source_dir && $path_str !~ /^\// ) {
+    my $rel_path = path($source_dir)->child($path_str);
+    if ( $rel_path->exists ) {
+      return $prefix . $rel_path . "}";
+    }
   }
-  
+
   return $fixed;
 }
