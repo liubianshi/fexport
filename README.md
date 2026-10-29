@@ -87,8 +87,8 @@ fexport -t docx -o report.docx document.md -- -M suppress-bibliography=false
 - `Author Affiliation`：作者单位，居中且不缩进。
 - `Keywords`：关键词，继承摘要风格且不缩进。
 - `Source Note`：资料来源等补充说明，使用 9 pt 字号和单倍行距。
-- `Figure Note`：图注，继承 `Source Note` 并使用 9 pt 字号。
-- `Table Note`：表注，继承 `Source Note` 并使用 9 pt 字号。
+- `FigureNote`：图注，继承 `Source Note` 并使用 9 pt 字号。
+- `TableNote`：表注，继承 `Source Note` 并使用 9 pt 字号。
 - `Emphasis Dot`：中文着重号，不覆盖字体与字号。
 
 ```markdown

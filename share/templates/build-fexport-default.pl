@@ -304,12 +304,11 @@ sub update_styles {
   set_indentation( $doc, $source_note, firstLineChars => 0, firstLine => 0 );
   set_size( $doc, $source_note, 18 );
 
-  for my $style_spec ( [ FigureNote => 'Figure Note' ], [ TableNote => 'Table Note' ], ) {
-    my ( $style_id, $name ) = @$style_spec;
+  for my $style_id (qw(FigureNote TableNote)) {
     my $note_style = add_style(
       $doc, $xpc,
       id      => $style_id,
-      name    => $name,
+      name    => $style_id,
       basedOn => 'SourceNote',
       next    => 'BodyText',
     );

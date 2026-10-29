@@ -191,6 +191,12 @@ for my $style_id ( sort keys %custom_styles ) {
 my $source_note = style_by_id( $styles, 'SourceNote' );
 is( $styles->findvalue( 'w:rPr/w:sz/@w:val',       $source_note ), 18,  'Source Note 使用 9 pt' );
 is( $styles->findvalue( 'w:pPr/w:spacing/@w:line', $source_note ), 240, 'Source Note 使用单倍行距' );
+for my $style_id (qw(FigureNote TableNote)) {
+  my $note_style = style_by_id( $styles, $style_id );
+  is( $styles->findvalue( 'w:name/@w:val',       $note_style ), $style_id, "$style_id 名称与 custom-style 调用一致" );
+  is( $styles->findvalue( 'w:rPr/w:sz/@w:val',   $note_style ), 18,        "$style_id 使用 9 pt" );
+  is( $styles->findvalue( 'w:rPr/w:szCs/@w:val', $note_style ), 18,        "$style_id 复杂文字字号同步为 9 pt" );
+}
 my $emphasis_dot = style_by_id( $styles, 'EmphasisDot' );
 is( $styles->findvalue( 'w:rPr/w:em/@w:val', $emphasis_dot ), 'dot',                        'Emphasis Dot 使用中文着重号' );
 is( xpath_count( $styles, 'w:rPr/w:rFonts | w:rPr/w:sz | w:rPr/w:szCs', $emphasis_dot ), 0, 'Emphasis Dot 不覆盖字体字号' );
