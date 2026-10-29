@@ -23,6 +23,8 @@ WriteMakefile(
   PREREQ_PM => {
     'Scope::Guard'     => '0',
     'YAML'             => '0',
+    'YAML::XS'         => '0',
+    'Path::Tiny'       => '0',
     'IPC::Run3'        => '0',
     'Data::Dump'       => '0',
     'File::ShareDir'   => '0',
