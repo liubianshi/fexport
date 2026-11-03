@@ -82,14 +82,22 @@ DOCX 默认使用 `share/templates/fexport-default.docx`，页面规格为 A4。
 fexport -t docx -o report.docx document.md -- -M suppress-bibliography=false
 ```
 
-模板提供六个可通过 Pandoc Div 或 Span 调用的自定义样式：
+模板提供以下可通过 Pandoc Div 或 Span 调用的自定义样式：
 
 - `Author Affiliation`：作者单位，居中且不缩进。
 - `Keywords`：关键词，继承摘要风格且不缩进。
 - `Source Note`：资料来源等补充说明，使用 9 pt 字号和单倍行距。
 - `FigureNote`：图注，继承 `Source Note` 并使用 9 pt 字号。
 - `TableNote`：表注，继承 `Source Note` 并使用 9 pt 字号。
+- `Corresponding Author`：通讯作者及联系方式，继承 `Source Note`。
+- `Funding`：基金项目与编号，继承 `Source Note`。
+- `Acknowledgements`：致谢，继承 `Source Note`。
 - `Emphasis Dot`：中文着重号，不覆盖字体与字号。
+
+摘要、作者名与块引用复用已有的 `Abstract`、`Author`、`Block Text` 段落样式。
+优先使用摘要／作者元数据及 `>` 块引用；需要指定正文位置时才显式使用 Div。
+图表标题仍用原生 caption；`FigureNote`、`TableNote` 用于标题以外的说明。
+样式名须精确匹配，包括空格；标签文字（如「注：」）由正文写出。
 
 ```markdown
 ::: {custom-style="Author Affiliation"}
@@ -104,8 +112,18 @@ fexport -t docx -o report.docx document.md -- -M suppress-bibliography=false
 资料来源：作者根据统计数据计算。
 :::
 
+::: {custom-style="Funding"}
+基金资助：项目名称（项目编号）。
+:::
+
 正文中的[着重内容]{custom-style="Emphasis Dot"}。
 ```
+
+这些样式控制 Word 排版，HTML 的 CSS 和 PDF 的模板／过滤器需分别配置。
+直接运行 Pandoc 时使用 `--reference-doc=share/templates/fexport-default.docx`；
+直接运行 Quarto 时在 `format.docx.reference-doc` 指定该模板路径。
+独立安装版若使用资源副本，修改后需重新安装，
+或设置 `FEXPORT_SHARE` 为更新后的仓库 `share` 绝对路径。
 
 需要回退旧模板时，在源码仓库中通过 CLI 透传 `--reference-doc`：
 
@@ -115,6 +133,9 @@ fexport -t docx -o report.docx document.md -- --reference-doc=share/templates/ec
 
 模板由 `share/templates/build-fexport-default.pl` 从旧经济研究模板生成。
 修改生成脚本后重新运行它，即可复现默认模板。
+新增样式时同步更新上述名称、模板测试及 dotclaude 的 `rules/references/pandoc-markdown.md` 样式表。
+运行 `FEXPORT_SHARE="$PWD/share" prove -l t/docx_template.t t/docx_custom_styles.t`，
+检查模板定义与实际 Pandoc 导出的段落／字符样式。
 
 ### 使用实时预览
 

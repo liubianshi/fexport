@@ -180,6 +180,9 @@ my %custom_styles = (
   SourceNote        => [ 'paragraph', 'Normal' ],
   FigureNote        => [ 'paragraph', 'SourceNote' ],
   TableNote         => [ 'paragraph', 'SourceNote' ],
+  CorrespondingAuthor => [ 'paragraph', 'SourceNote' ],
+  Funding           => [ 'paragraph', 'SourceNote' ],
+  Acknowledgements  => [ 'paragraph', 'SourceNote' ],
   EmphasisDot       => [ 'character', 'DefaultParagraphFont' ],
 );
 for my $style_id ( sort keys %custom_styles ) {

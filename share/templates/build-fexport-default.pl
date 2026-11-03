@@ -315,6 +315,20 @@ sub update_styles {
     set_size( $doc, $note_style, 18 );
   }
 
+  for my $spec (
+    [ 'CorrespondingAuthor', 'Corresponding Author' ],
+    [ 'Funding', 'Funding' ],
+    [ 'Acknowledgements', 'Acknowledgements' ],
+  ) {
+    add_style(
+      $doc, $xpc,
+      id      => $spec->[0],
+      name    => $spec->[1],
+      basedOn => 'SourceNote',
+      next    => 'BodyText',
+    );
+  }
+
   my $emphasis = add_style(
     $doc, $xpc,
     id      => 'EmphasisDot',
